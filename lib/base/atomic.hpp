@@ -70,7 +70,9 @@ public:
 template<class T>
 struct Atomicable
 {
-	static constexpr bool value = std::is_trivially_copyable<T>::value && sizeof(T) <= sizeof(void*);
+	// Doesn't work with too old compilers.
+	//static constexpr bool value = std::is_trivially_copyable<T>::value && sizeof(T) <= sizeof(void*);
+	static constexpr bool value = (std::is_fundamental<T>::value || std::is_pointer<T>::value) && sizeof(T) <= sizeof(void*);
 };
 
 /**
