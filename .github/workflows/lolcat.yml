@@ -1,0 +1,12 @@
+name: LOLCAT
+
+on:
+  pull_request: {}
+
+jobs:
+  lolcat:
+    name: LOLCAT
+    runs-on: ubuntu-latest
+
+    steps:
+      - run: sleep 20
