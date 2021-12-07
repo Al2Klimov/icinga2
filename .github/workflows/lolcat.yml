@@ -1,0 +1,44 @@
+name: .deb
+
+on:
+  push:
+    branches:
+      - master
+      - 'support/*'
+  pull_request: {}
+
+jobs:
+  deb:
+    name: .deb
+
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - name: debian
+            codename: bullseye
+            has32bit: true
+          - name: debian
+            codename: buster
+            has32bit: true
+          - name: debian
+            codename: stretch
+            has32bit: true
+          - name: ubuntu
+            codename: impish
+            has32bit: false
+          - name: ubuntu
+            codename: hirsute
+            has32bit: false
+          - name: ubuntu
+            codename: focal
+            has32bit: false
+          - name: ubuntu
+            codename: bionic
+            has32bit: true
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: deb-icinga2
+        run: sleep 120
