@@ -23,7 +23,7 @@ jobs:
           access_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker image
-        uses: Icinga/docker-icinga2@master
+        uses: Al2Klimov/docker-icinga2@feature/arm-27
         env:
           INPUT_TOKEN: '${{ github.token }}'
           DOCKER_HUB_PASSWORD: '${{ secrets.DOCKER_HUB_PERSONAL_TOKEN }}'
