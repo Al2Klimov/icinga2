@@ -30,6 +30,8 @@
 #include "icinga/timeperiod.hpp"
 #include "icinga/pluginutility.hpp"
 #include "remote/zone.hpp"
+#include <chrono>
+#include <cstdint>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -84,12 +86,8 @@ void IcingaDB::ConfigStaticInitialize()
 		AcknowledgementClearedHandler(checkable, removedBy, changeTime);
 	});
 
-	Checkable::OnAcknowledgementSet.connect([](const Checkable::Ptr& checkable, const String& author, const String& comment, AcknowledgementType type, bool, bool persistent, double changeTime, double expiry, const MessageOrigin::Ptr&) {
-		IcingaDB::StateChangeHandler(checkable);
-	});
-	/* triggered when acknowledged host/service goes back to ok and when the acknowledgement gets deleted */
-	Checkable::OnAcknowledgementCleared.connect([](const Checkable::Ptr& checkable, const String&, double, const MessageOrigin::Ptr&) {
-		IcingaDB::StateChangeHandler(checkable);
+	Checkable::OnReachabilityChanged.connect([](const Checkable::Ptr&, const CheckResult::Ptr&, std::set<Checkable::Ptr> children, const MessageOrigin::Ptr&) {
+		IcingaDB::ReachabilityChangeHandler(children);
 	});
 
 	/* triggered on create, update and delete objects */
@@ -127,7 +125,7 @@ void IcingaDB::ConfigStaticInitialize()
 	});
 
 	Service::OnHostProblemChanged.connect([](const Service::Ptr& service, const CheckResult::Ptr&, const MessageOrigin::Ptr&) {
-		IcingaDB::StateChangeHandler(service);
+		IcingaDB::HostProblemChangedHandler(service);
 	});
 
 	Notification::OnUsersRawChangedWithOldValue.connect([](const Notification::Ptr& notification, const Value& oldValues, const Value& newValues) {
@@ -168,10 +166,16 @@ void IcingaDB::ConfigStaticInitialize()
 void IcingaDB::UpdateAllConfigObjects()
 {
 	m_Rcon->Sync();
-	m_Rcon->FireAndForgetQuery({"XADD", "icinga:schema", "MAXLEN", "1", "*", "version", "4"}, Prio::Heartbeat);
+	m_Rcon->FireAndForgetQuery({"XADD", "icinga:schema", "MAXLEN", "1", "*", "version", "5"}, Prio::Heartbeat);
 
 	Log(LogInformation, "IcingaDB") << "Starting initial config/status dump";
 	double startTime = Utility::GetTime();
+
+	SetOngoingDumpStart(startTime);
+
+	Defer resetOngoingDumpStart ([this]() {
+		SetOngoingDumpStart(0);
+	});
 
 	// Use a Workqueue to pack objects in parallel
 	WorkQueue upq(25000, Configuration::Concurrency, LogNotice);
@@ -232,18 +236,7 @@ void IcingaDB::UpdateAllConfigObjects()
 					"HSCAN", configCheckSum, cursor, "COUNT", "1000"
 				}, Prio::Config);
 
-				Array::Ptr kvs = res->Get(1);
-				Value* key = nullptr;
-				ObjectLock oLock (kvs);
-
-				for (auto& kv : kvs) {
-					if (key) {
-						redisCheckSums.emplace(std::move(*key), std::move(kv));
-						key = nullptr;
-					} else {
-						key = &kv;
-					}
-				}
+				AddKvsToMap(res->Get(1), redisCheckSums);
 
 				cursor = res->Get(0);
 			} while (cursor != "0");
@@ -415,6 +408,8 @@ void IcingaDB::UpdateAllConfigObjects()
 		auto ourEnd (ourCheckSums.end());
 
 		auto flushSets ([&]() {
+			auto affectedConfig (setObject.size() / 2u);
+
 			setChecksum.insert(setChecksum.begin(), {"HMSET", configCheckSum});
 			setObject.insert(setObject.begin(), {"HMSET", configObject});
 
@@ -428,10 +423,12 @@ void IcingaDB::UpdateAllConfigObjects()
 			setChecksum.clear();
 			setObject.clear();
 
-			rcon->FireAndForgetQueries(std::move(transaction), Prio::Config);
+			rcon->FireAndForgetQueries(std::move(transaction), Prio::Config, {affectedConfig});
 		});
 
 		auto flushDels ([&]() {
+			auto affectedConfig (delObject.size());
+
 			delChecksum.insert(delChecksum.begin(), {"HDEL", configCheckSum});
 			delObject.insert(delObject.begin(), {"HDEL", configObject});
 
@@ -445,7 +442,7 @@ void IcingaDB::UpdateAllConfigObjects()
 			delChecksum.clear();
 			delObject.clear();
 
-			rcon->FireAndForgetQueries(std::move(transaction), Prio::Config);
+			rcon->FireAndForgetQueries(std::move(transaction), Prio::Config, {affectedConfig});
 		});
 
 		auto setOne ([&]() {
@@ -537,8 +534,14 @@ void IcingaDB::UpdateAllConfigObjects()
 	m_Rcon->EnqueueCallback([&p](boost::asio::yield_context& yc) { p.set_value(); }, Prio::Config);
 	p.get_future().wait();
 
+	auto endTime (Utility::GetTime());
+	auto took (endTime - startTime);
+
+	SetLastdumpTook(took);
+	SetLastdumpEnd(endTime);
+
 	Log(LogInformation, "IcingaDB")
-			<< "Initial config/status dump finished in " << Utility::GetTime() - startTime << " seconds.";
+		<< "Initial config/status dump finished in " << took << " seconds.";
 }
 
 std::vector<std::vector<intrusive_ptr<ConfigObject>>> IcingaDB::ChunkObjects(std::vector<intrusive_ptr<ConfigObject>> objects, size_t chunkSize) {
@@ -558,7 +561,7 @@ std::vector<std::vector<intrusive_ptr<ConfigObject>>> IcingaDB::ChunkObjects(std
 		chunks.emplace_back(offset, end);
 	}
 
-	return std::move(chunks);
+	return chunks;
 }
 
 void IcingaDB::DeleteKeys(const RedisConnection::Ptr& conn, const std::vector<String>& keys, RedisConnection::QueryPriority priority) {
@@ -595,7 +598,7 @@ std::vector<String> IcingaDB::GetTypeOverwriteKeys(const String& type)
 		keys.emplace_back(m_PrefixConfigCheckSum + type + ":argument");
 	}
 
-	return std::move(keys);
+	return keys;
 }
 
 std::vector<String> IcingaDB::GetTypeDumpSignalKeys(const Type::Ptr& type)
@@ -625,7 +628,7 @@ std::vector<String> IcingaDB::GetTypeDumpSignalKeys(const Type::Ptr& type)
 		keys.emplace_back(m_PrefixConfigObject + lcType + ":argument");
 	}
 
-	return std::move(keys);
+	return keys;
 }
 
 template<typename ConfigType>
@@ -992,12 +995,13 @@ void IcingaDB::InsertObjectDependencies(const ConfigObject::Ptr& object, const S
 					values = new Dictionary({{"value", kv.second}});
 				}
 
-				for (const char *attr : {"value", "set_if"}) {
+				for (const char *attr : {"value", "set_if", "separator"}) {
 					Value value;
 
 					// Stringify if set.
 					if (values->Get(attr, &value)) {
 						switch (value.GetType()) {
+							case ValueEmpty:
 							case ValueString:
 								break;
 							case ValueObject:
@@ -1006,6 +1010,15 @@ void IcingaDB::InsertObjectDependencies(const ConfigObject::Ptr& object, const S
 							default:
 								values->Set(attr, JsonEncode(value));
 						}
+					}
+				}
+
+				{
+					Value order;
+
+					// Intify if set.
+					if (values->Get("order", &order)) {
+						values->Set("order", (int)order);
 					}
 				}
 
@@ -1082,7 +1095,23 @@ void IcingaDB::InsertObjectDependencies(const ConfigObject::Ptr& object, const S
 	}
 }
 
-void IcingaDB::UpdateState(const Checkable::Ptr& checkable)
+/**
+ * Update the state information of a checkable in Redis.
+ *
+ * What is updated exactly depends on the mode parameter:
+ *  - Volatile: Update the volatile state information stored in icinga:host:state or icinga:service:state as well as
+ *    the corresponding checksum stored in icinga:checksum:host:state or icinga:checksum:service:state.
+ *  - RuntimeOnly: Write a runtime update to the icinga:runtime:state stream. It is up to the caller to ensure that
+ *    identical volatile state information was already written before to avoid inconsistencies. This mode is only
+ *    useful to upgrade a previous Volatile to a Full operation, otherwise Full should be used.
+ *  - Full: Perform an update of all state information in Redis, that is updating the volatile information and sending
+ *    a corresponding runtime update so that this state update gets written through to the persistent database by a
+ *    running icingadb process.
+ *
+ * @param checkable State of this checkable is updated in Redis
+ * @param mode Mode of operation (StateUpdate::Volatile, StateUpdate::RuntimeOnly, or StateUpdate::Full)
+ */
+void IcingaDB::UpdateState(const Checkable::Ptr& checkable, StateUpdate mode)
 {
 	if (!m_Rcon || !m_Rcon->IsConnected())
 		return;
@@ -1092,9 +1121,34 @@ void IcingaDB::UpdateState(const Checkable::Ptr& checkable)
 
 	Dictionary::Ptr stateAttrs = SerializeState(checkable);
 
-	m_Rcon->FireAndForgetQuery({"HSET", m_PrefixConfigObject + objectType + ":state", objectKey, JsonEncode(stateAttrs)}, Prio::RuntimeStateSync);
-	m_Rcon->FireAndForgetQuery({"HSET", m_PrefixConfigCheckSum + objectType + ":state", objectKey, JsonEncode(new Dictionary({{"checksum", HashValue(stateAttrs)}}))}, Prio::RuntimeStateSync);
+	String redisStateKey = m_PrefixConfigObject + objectType + ":state";
+	String redisChecksumKey = m_PrefixConfigCheckSum + objectType + ":state";
+	String checksum = HashValue(stateAttrs);
 
+	if (mode & StateUpdate::Volatile) {
+		m_Rcon->FireAndForgetQueries({
+			{"HSET", redisStateKey, objectKey, JsonEncode(stateAttrs)},
+			{"HSET", redisChecksumKey, objectKey, JsonEncode(new Dictionary({{"checksum", checksum}}))},
+		}, Prio::RuntimeStateSync);
+	}
+
+	if (mode & StateUpdate::RuntimeOnly) {
+		ObjectLock olock(stateAttrs);
+
+		std::vector<String> streamadd({
+			"XADD", "icinga:runtime:state", "MAXLEN", "~", "1000000", "*",
+			"runtime_type", "upsert",
+			"redis_key", redisStateKey,
+			"checksum", checksum,
+		});
+
+		for (const Dictionary::Pair& kv : stateAttrs) {
+			streamadd.emplace_back(kv.first);
+			streamadd.emplace_back(IcingaToStreamValue(kv.second));
+		}
+
+		m_Rcon->FireAndForgetQuery(std::move(streamadd), Prio::RuntimeStateStream, {0, 1});
+	}
 }
 
 // Used to update a single object, used for runtime updates
@@ -1111,16 +1165,7 @@ void IcingaDB::SendConfigUpdate(const ConfigObject::Ptr& object, bool runtimeUpd
 	CreateConfigUpdate(object, typeName, hMSets, runtimeUpdates, runtimeUpdate);
 	Checkable::Ptr checkable = dynamic_pointer_cast<Checkable>(object);
 	if (checkable) {
-		String objectKey = GetObjectIdentifier(object);
-		Dictionary::Ptr state = SerializeState(checkable);
-		String checksum = HashValue(state);
-
-		m_Rcon->FireAndForgetQuery({"HSET", m_PrefixConfigObject + typeName + ":state", objectKey, JsonEncode(state)}, Prio::RuntimeStateSync);
-		m_Rcon->FireAndForgetQuery({"HSET", m_PrefixConfigCheckSum + typeName + ":state", objectKey, JsonEncode(new Dictionary({{"checksum", checksum}}))}, Prio::RuntimeStateSync);
-
-		if (runtimeUpdate) {
-			SendStatusUpdate(checkable);
-		}
+		UpdateState(checkable, runtimeUpdate ? StateUpdate::Full : StateUpdate::Volatile);
 	}
 
 	std::vector<std::vector<String> > transaction = {{"MULTI"}};
@@ -1149,7 +1194,7 @@ void IcingaDB::SendConfigUpdate(const ConfigObject::Ptr& object, bool runtimeUpd
 
 	if (transaction.size() > 1) {
 		transaction.push_back({"EXEC"});
-		m_Rcon->FireAndForgetQueries(std::move(transaction), Prio::Config);
+		m_Rcon->FireAndForgetQueries(std::move(transaction), Prio::Config, {1});
 	}
 
 	if (checkable) {
@@ -1186,7 +1231,7 @@ bool IcingaDB::PrepareObject(const ConfigObject::Ptr& object, Dictionary::Ptr& a
 
 	if (ObjectsZone) {
 		attributes->Set("zone_id", GetObjectIdentifier(ObjectsZone));
-		attributes->Set("zone", ObjectsZone->GetName());
+		attributes->Set("zone_name", ObjectsZone->GetName());
 	}
 
 	if (type == Endpoint::TypeInstance) {
@@ -1212,7 +1257,7 @@ bool IcingaDB::PrepareObject(const ConfigObject::Ptr& object, Dictionary::Ptr& a
 	if (type == Host::TypeInstance || type == Service::TypeInstance) {
 		Checkable::Ptr checkable = static_pointer_cast<Checkable>(object);
 
-		attributes->Set("checkcommand", checkable->GetCheckCommand()->GetName());
+		attributes->Set("checkcommand_name", checkable->GetCheckCommand()->GetName());
 		attributes->Set("max_check_attempts", checkable->GetMaxCheckAttempts());
 		attributes->Set("check_timeout", checkable->GetCheckTimeout());
 		attributes->Set("check_interval", checkable->GetCheckInterval());
@@ -1234,19 +1279,19 @@ bool IcingaDB::PrepareObject(const ConfigObject::Ptr& object, Dictionary::Ptr& a
 		Endpoint::Ptr commandEndpoint = checkable->GetCommandEndpoint();
 		if (commandEndpoint) {
 			attributes->Set("command_endpoint_id", GetObjectIdentifier(commandEndpoint));
-			attributes->Set("command_endpoint", commandEndpoint->GetName());
+			attributes->Set("command_endpoint_name", commandEndpoint->GetName());
 		}
 
 		TimePeriod::Ptr timePeriod = checkable->GetCheckPeriod();
 		if (timePeriod) {
 			attributes->Set("check_timeperiod_id", GetObjectIdentifier(timePeriod));
-			attributes->Set("check_timeperiod", timePeriod->GetName());
+			attributes->Set("check_timeperiod_name", timePeriod->GetName());
 		}
 
 		EventCommand::Ptr eventCommand = checkable->GetEventCommand();
 		if (eventCommand) {
 			attributes->Set("eventcommand_id", GetObjectIdentifier(eventCommand));
-			attributes->Set("eventcommand", eventCommand->GetName());
+			attributes->Set("eventcommand_name", eventCommand->GetName());
 		}
 
 		String actionUrl = checkable->GetActionUrl();
@@ -1341,7 +1386,7 @@ bool IcingaDB::PrepareObject(const ConfigObject::Ptr& object, Dictionary::Ptr& a
 		attributes->Set("entry_type", comment->GetEntryType());
 		attributes->Set("entry_time", TimestampToMilliseconds(comment->GetEntryTime()));
 		attributes->Set("is_persistent", comment->GetPersistent());
-		attributes->Set("is_sticky", comment->GetEntryType() == CommentAcknowledgement && comment->GetCheckable()->GetAcknowledgement() == AcknowledgementSticky);
+		attributes->Set("is_sticky", comment->GetSticky());
 
 		Host::Ptr host;
 		Service::Ptr service;
@@ -1584,35 +1629,11 @@ unsigned short GetPreviousState(const Checkable::Ptr& checkable, const Service::
 	}
 }
 
-void IcingaDB::SendStatusUpdate(const Checkable::Ptr& checkable)
-{
-	if (!m_Rcon || !m_Rcon->IsConnected())
-		return;
-
-	Host::Ptr host;
-	Service::Ptr service;
-	Dictionary::Ptr objectAttrs = SerializeState(checkable);
-	std::vector<String> streamadd({"XADD", "icinga:runtime:state", "MAXLEN", "~", "1000000", "*"});
-	ObjectLock olock(objectAttrs);
-
-	tie(host, service) = GetHostService(checkable);
-
-	objectAttrs->Set("checksum", HashValue(objectAttrs));
-	objectAttrs->Set("redis_key", service ? "icinga:service:state" : "icinga:host:state");
-	objectAttrs->Set("runtime_type", "upsert");
-
-	for (const Dictionary::Pair& kv : objectAttrs) {
-		streamadd.emplace_back(kv.first);
-		streamadd.emplace_back(IcingaToStreamValue(kv.second));
-	}
-
-	m_Rcon->FireAndForgetQuery(std::move(streamadd), Prio::RuntimeStateStream);
-}
-
 void IcingaDB::SendStateChange(const ConfigObject::Ptr& object, const CheckResult::Ptr& cr, StateType type)
 {
-	if (!m_Rcon || !m_Rcon->IsConnected())
+	if (!GetActive()) {
 		return;
+	}
 
 	Checkable::Ptr checkable = dynamic_pointer_cast<Checkable>(object);
 	if (!checkable)
@@ -1626,7 +1647,7 @@ void IcingaDB::SendStateChange(const ConfigObject::Ptr& object, const CheckResul
 
 	tie(host, service) = GetHostService(checkable);
 
-	SendStatusUpdate(checkable);
+	UpdateState(checkable, StateUpdate::RuntimeOnly);
 
 	int hard_state;
 	if (!cr) {
@@ -1649,7 +1670,7 @@ void IcingaDB::SendStateChange(const ConfigObject::Ptr& object, const CheckResul
 		"state_type", Convert::ToString(type),
 		"soft_state", Convert::ToString(cr ? service ? Convert::ToLong(cr->GetState()) : Convert::ToLong(Host::CalculateState(cr->GetState())) : 99),
 		"hard_state", Convert::ToString(hard_state),
-		"attempt", Convert::ToString(checkable->GetCheckAttempt()),
+		"check_attempt", Convert::ToString(checkable->GetCheckAttempt()),
 		"previous_soft_state", Convert::ToString(GetPreviousState(checkable, service, StateTypeSoft)),
 		"previous_hard_state", Convert::ToString(GetPreviousState(checkable, service, StateTypeHard)),
 		"max_check_attempts", Convert::ToString(checkable->GetMaxCheckAttempts()),
@@ -1695,7 +1716,7 @@ void IcingaDB::SendStateChange(const ConfigObject::Ptr& object, const CheckResul
 		xAdd.emplace_back(GetObjectIdentifier(endpoint));
 	}
 
-	m_Rcon->FireAndForgetQuery(std::move(xAdd), Prio::History);
+	m_HistoryBulker.ProduceOne(std::move(xAdd));
 }
 
 void IcingaDB::SendSentNotification(
@@ -1703,8 +1724,9 @@ void IcingaDB::SendSentNotification(
 	NotificationType type, const CheckResult::Ptr& cr, const String& author, const String& text, double sendTime
 )
 {
-	if (!m_Rcon || !m_Rcon->IsConnected())
+	if (!GetActive()) {
 		return;
+	}
 
 	Host::Ptr host;
 	Service::Ptr service;
@@ -1732,7 +1754,7 @@ void IcingaDB::SendSentNotification(
 		"host_id", GetObjectIdentifier(host),
 		"type", Convert::ToString(type),
 		"state", Convert::ToString(cr ? service ? Convert::ToLong(cr->GetState()) : Convert::ToLong(Host::CalculateState(cr->GetState())) : 99),
-		"previous_hard_state", Convert::ToString(GetPreviousState(checkable, service, StateTypeHard)),
+		"previous_hard_state", Convert::ToString(cr ? Convert::ToLong(service ? cr->GetPreviousHardState() : Host::CalculateState(cr->GetPreviousHardState())) : 99),
 		"author", Utility::ValidateUTF8(author),
 		"text", Utility::ValidateUTF8(finalText),
 		"users_notified", Convert::ToString(usersAmount),
@@ -1767,13 +1789,14 @@ void IcingaDB::SendSentNotification(
 		xAdd.emplace_back(JsonEncode(users_notified));
 	}
 
-	m_Rcon->FireAndForgetQuery(std::move(xAdd), Prio::History);
+	m_HistoryBulker.ProduceOne(std::move(xAdd));
 }
 
 void IcingaDB::SendStartedDowntime(const Downtime::Ptr& downtime)
 {
-	if (!m_Rcon || !m_Rcon->IsConnected())
+	if (!GetActive()) {
 		return;
+	}
 
 	SendConfigUpdate(downtime, true);
 
@@ -1783,6 +1806,9 @@ void IcingaDB::SendStartedDowntime(const Downtime::Ptr& downtime)
 	Host::Ptr host;
 	Service::Ptr service;
 	tie(host, service) = GetHostService(checkable);
+
+	/* Update checkable state as in_downtime may have changed. */
+	UpdateState(checkable, StateUpdate::Full);
 
 	std::vector<String> xAdd ({
 		"XADD", "icinga:history:stream:downtime", "*",
@@ -1850,13 +1876,14 @@ void IcingaDB::SendStartedDowntime(const Downtime::Ptr& downtime)
 		xAdd.emplace_back(scheduledBy);
 	}
 
-	m_Rcon->FireAndForgetQuery(std::move(xAdd), Prio::History);
+	m_HistoryBulker.ProduceOne(std::move(xAdd));
 }
 
 void IcingaDB::SendRemovedDowntime(const Downtime::Ptr& downtime)
 {
-	if (!m_Rcon || !m_Rcon->IsConnected())
+	if (!GetActive()) {
 		return;
+	}
 
 	auto checkable (downtime->GetCheckable());
 	auto triggeredBy (Downtime::GetByName(downtime->GetTriggeredBy()));
@@ -1868,6 +1895,9 @@ void IcingaDB::SendRemovedDowntime(const Downtime::Ptr& downtime)
 	// Downtime never got triggered (didn't send "downtime_start") so we don't want to send "downtime_end"
 	if (downtime->GetTriggerTime() == 0)
 		return;
+
+	/* Update checkable state as in_downtime may have changed. */
+	UpdateState(checkable, StateUpdate::Full);
 
 	std::vector<String> xAdd ({
 		"XADD", "icinga:history:stream:downtime", "*",
@@ -1884,7 +1914,7 @@ void IcingaDB::SendRemovedDowntime(const Downtime::Ptr& downtime)
 		"scheduled_end_time", Convert::ToString(TimestampToMilliseconds(downtime->GetEndTime())),
 		"has_been_cancelled", Convert::ToString((unsigned short)downtime->GetWasCancelled()),
 		"trigger_time", Convert::ToString(TimestampToMilliseconds(downtime->GetTriggerTime())),
-		"cancel_time", Convert::ToString(TimestampToMilliseconds(Utility::GetTime())),
+		"cancel_time", Convert::ToString(TimestampToMilliseconds(downtime->GetRemoveTime())),
 		"event_id", CalcEventID("downtime_end", downtime),
 		"event_type", "downtime_end"
 	});
@@ -1937,12 +1967,12 @@ void IcingaDB::SendRemovedDowntime(const Downtime::Ptr& downtime)
 		xAdd.emplace_back(scheduledBy);
 	}
 
-	m_Rcon->FireAndForgetQuery(std::move(xAdd), Prio::History);
+	m_HistoryBulker.ProduceOne(std::move(xAdd));
 }
 
 void IcingaDB::SendAddedComment(const Comment::Ptr& comment)
 {
-	if (!m_Rcon || !m_Rcon->IsConnected() || comment->GetEntryType() != CommentUser)
+	if (comment->GetEntryType() != CommentUser || !GetActive())
 		return;
 
 	auto checkable (comment->GetCheckable());
@@ -1961,7 +1991,7 @@ void IcingaDB::SendAddedComment(const Comment::Ptr& comment)
 		"comment", Utility::ValidateUTF8(comment->GetText()),
 		"entry_type", Convert::ToString(comment->GetEntryType()),
 		"is_persistent", Convert::ToString((unsigned short)comment->GetPersistent()),
-		"is_sticky", Convert::ToString((unsigned short)(comment->GetEntryType() == CommentAcknowledgement && comment->GetCheckable()->GetAcknowledgement() == AcknowledgementSticky)),
+		"is_sticky", Convert::ToString((unsigned short)comment->GetSticky()),
 		"event_id", CalcEventID("comment_add", comment),
 		"event_type", "comment_add"
 	});
@@ -1992,15 +2022,30 @@ void IcingaDB::SendAddedComment(const Comment::Ptr& comment)
 		}
 	}
 
-	m_Rcon->FireAndForgetQuery(std::move(xAdd), Prio::History);
-	UpdateState(checkable);
-	SendStatusUpdate(checkable);
+	m_HistoryBulker.ProduceOne(std::move(xAdd));
+	UpdateState(checkable, StateUpdate::Full);
 }
 
 void IcingaDB::SendRemovedComment(const Comment::Ptr& comment)
 {
-	if (!m_Rcon || !m_Rcon->IsConnected())
+	if (comment->GetEntryType() != CommentUser || !GetActive()) {
 		return;
+	}
+
+	double removeTime = comment->GetRemoveTime();
+	bool wasRemoved = removeTime > 0;
+
+	double expireTime = comment->GetExpireTime();
+	bool hasExpireTime = expireTime > 0;
+	bool isExpired = hasExpireTime && expireTime <= Utility::GetTime();
+
+	if (!wasRemoved && !isExpired) {
+		/* The comment object disappeared for no apparent reason, most likely because it simply was deleted instead
+		 * of using the proper remove-comment API action. In this case, information that should normally be set is
+		 * missing and a proper history event cannot be generated.
+		 */
+		return;
+	}
 
 	auto checkable (comment->GetCheckable());
 
@@ -2018,7 +2063,7 @@ void IcingaDB::SendRemovedComment(const Comment::Ptr& comment)
 		"comment", Utility::ValidateUTF8(comment->GetText()),
 		"entry_type", Convert::ToString(comment->GetEntryType()),
 		"is_persistent", Convert::ToString((unsigned short)comment->GetPersistent()),
-		"is_sticky", Convert::ToString((unsigned short)(comment->GetEntryType() == CommentAcknowledgement && comment->GetCheckable()->GetAcknowledgement() == AcknowledgementSticky)),
+		"is_sticky", Convert::ToString((unsigned short)comment->GetSticky()),
 		"event_id", CalcEventID("comment_remove", comment),
 		"event_type", "comment_remove"
 	});
@@ -2040,9 +2085,9 @@ void IcingaDB::SendRemovedComment(const Comment::Ptr& comment)
 		xAdd.emplace_back(GetObjectIdentifier(endpoint));
 	}
 
-	if (comment->GetExpireTime() < Utility::GetTime()) {
+	if (wasRemoved) {
 		xAdd.emplace_back("remove_time");
-		xAdd.emplace_back(Convert::ToString(TimestampToMilliseconds(Utility::GetTime())));
+		xAdd.emplace_back(Convert::ToString(TimestampToMilliseconds(removeTime)));
 		xAdd.emplace_back("has_been_removed");
 		xAdd.emplace_back("1");
 		xAdd.emplace_back("removed_by");
@@ -2052,24 +2097,20 @@ void IcingaDB::SendRemovedComment(const Comment::Ptr& comment)
 		xAdd.emplace_back("0");
 	}
 
-	{
-		auto expireTime (comment->GetExpireTime());
-
-		if (expireTime > 0) {
-			xAdd.emplace_back("expire_time");
-			xAdd.emplace_back(Convert::ToString(TimestampToMilliseconds(expireTime)));
-		}
+	if (hasExpireTime) {
+		xAdd.emplace_back("expire_time");
+		xAdd.emplace_back(Convert::ToString(TimestampToMilliseconds(expireTime)));
 	}
 
-	m_Rcon->FireAndForgetQuery(std::move(xAdd), Prio::History);
-	UpdateState(checkable);
-	SendStatusUpdate(checkable);
+	m_HistoryBulker.ProduceOne(std::move(xAdd));
+	UpdateState(checkable, StateUpdate::Full);
 }
 
 void IcingaDB::SendFlappingChange(const Checkable::Ptr& checkable, double changeTime, double flappingLastChange)
 {
-	if (!m_Rcon || !m_Rcon->IsConnected())
+	if (!GetActive()) {
 		return;
+	}
 
 	Host::Ptr host;
 	Service::Ptr service;
@@ -2127,7 +2168,7 @@ void IcingaDB::SendFlappingChange(const Checkable::Ptr& checkable, double change
 	xAdd.emplace_back("id");
 	xAdd.emplace_back(HashValue(new Array({m_EnvironmentId, checkable->GetName(), startTime})));
 
-	m_Rcon->FireAndForgetQuery(std::move(xAdd), Prio::History);
+	m_HistoryBulker.ProduceOne(std::move(xAdd));
 }
 
 void IcingaDB::SendNextUpdate(const Checkable::Ptr& checkable)
@@ -2159,12 +2200,16 @@ void IcingaDB::SendNextUpdate(const Checkable::Ptr& checkable)
 
 void IcingaDB::SendAcknowledgementSet(const Checkable::Ptr& checkable, const String& author, const String& comment, AcknowledgementType type, bool persistent, double changeTime, double expiry)
 {
-	if (!m_Rcon || !m_Rcon->IsConnected())
+	if (!GetActive()) {
 		return;
+	}
 
 	Host::Ptr host;
 	Service::Ptr service;
 	tie(host, service) = GetHostService(checkable);
+
+	/* Update checkable state as is_acknowledged may have changed. */
+	UpdateState(checkable, StateUpdate::Full);
 
 	std::vector<String> xAdd ({
 		"XADD", "icinga:history:stream:acknowledgement", "*",
@@ -2208,17 +2253,21 @@ void IcingaDB::SendAcknowledgementSet(const Checkable::Ptr& checkable, const Str
 	xAdd.emplace_back("id");
 	xAdd.emplace_back(HashValue(new Array({m_EnvironmentId, checkable->GetName(), setTime})));
 
-	m_Rcon->FireAndForgetQuery(std::move(xAdd), Prio::History);
+	m_HistoryBulker.ProduceOne(std::move(xAdd));
 }
 
 void IcingaDB::SendAcknowledgementCleared(const Checkable::Ptr& checkable, const String& removedBy, double changeTime, double ackLastChange)
 {
-	if (!m_Rcon || !m_Rcon->IsConnected())
+	if (!GetActive()) {
 		return;
+	}
 
 	Host::Ptr host;
 	Service::Ptr service;
 	tie(host, service) = GetHostService(checkable);
+
+	/* Update checkable state as is_acknowledged may have changed. */
+	UpdateState(checkable, StateUpdate::Full);
 
 	std::vector<String> xAdd ({
 		"XADD", "icinga:history:stream:acknowledgement", "*",
@@ -2259,7 +2308,79 @@ void IcingaDB::SendAcknowledgementCleared(const Checkable::Ptr& checkable, const
 		xAdd.emplace_back(removedBy);
 	}
 
-	m_Rcon->FireAndForgetQuery(std::move(xAdd), Prio::History);
+	m_HistoryBulker.ProduceOne(std::move(xAdd));
+}
+
+void IcingaDB::ForwardHistoryEntries()
+{
+	using clock = std::chrono::steady_clock;
+
+	const std::chrono::seconds logInterval (10);
+	auto nextLog (clock::now() + logInterval);
+
+	auto logPeriodically ([this, logInterval, &nextLog]() {
+		if (clock::now() > nextLog) {
+			nextLog += logInterval;
+
+			auto size (m_HistoryBulker.Size());
+
+			Log(size > m_HistoryBulker.GetBulkSize() ? LogInformation : LogNotice, "IcingaDB")
+				<< "Pending history queries: " << size;
+		}
+	});
+
+	for (;;) {
+		logPeriodically();
+
+		auto haystack (m_HistoryBulker.ConsumeMany());
+
+		if (haystack.empty()) {
+			if (!GetActive()) {
+				break;
+			}
+
+			continue;
+		}
+
+		uintmax_t attempts = 0;
+
+		auto logFailure ([&haystack, &attempts](const char* err = nullptr) {
+			Log msg (LogNotice, "IcingaDB");
+
+			msg << "history: " << haystack.size() << " queries failed temporarily (attempt #" << ++attempts << ")";
+
+			if (err) {
+				msg << ": " << err;
+			}
+		});
+
+		for (;;) {
+			logPeriodically();
+
+			if (m_Rcon && m_Rcon->IsConnected()) {
+				try {
+					m_Rcon->GetResultsOfQueries(haystack, Prio::History, {0, 0, haystack.size()});
+					break;
+				} catch (const std::exception& ex) {
+					logFailure(ex.what());
+				} catch (...) {
+					logFailure();
+				}
+			} else {
+				logFailure("not connected to Redis");
+			}
+
+			if (!GetActive()) {
+				Log(LogCritical, "IcingaDB") << "history: " << haystack.size() << " queries failed (attempt #" << attempts
+					<< ") while we're about to shut down. Giving up and discarding additional "
+					<< m_HistoryBulker.Size() << " queued history queries.";
+
+				return;
+			}
+
+			Utility::Sleep(2);
+		}
+	}
 }
 
 void IcingaDB::SendNotificationUsersChanged(const Notification::Ptr& notification, const Array::Ptr& oldValues, const Array::Ptr& newValues) {
@@ -2432,18 +2553,19 @@ Dictionary::Ptr IcingaDB::SerializeState(const Checkable::Ptr& checkable)
 	if (service) {
 		attrs->Set("service_id", id);
 		auto state = service->HasBeenChecked() ? service->GetState() : 99;
-		attrs->Set("state", state);
+		attrs->Set("soft_state", state);
 		attrs->Set("hard_state", service->HasBeenChecked() ? service->GetLastHardState() : 99);
 		attrs->Set("severity", service->GetSeverity());
 		attrs->Set("host_id", GetObjectIdentifier(host));
 	} else {
 		attrs->Set("host_id", id);
 		auto state = host->HasBeenChecked() ? host->GetState() : 99;
-		attrs->Set("state", state);
+		attrs->Set("soft_state", state);
 		attrs->Set("hard_state", host->HasBeenChecked() ? host->GetLastHardState() : 99);
 		attrs->Set("severity", host->GetSeverity());
 	}
 
+	attrs->Set("previous_soft_state", GetPreviousState(checkable, service, StateTypeSoft));
 	attrs->Set("previous_hard_state", GetPreviousState(checkable, service, StateTypeHard));
 	attrs->Set("check_attempt", checkable->GetCheckAttempt());
 
@@ -2475,7 +2597,7 @@ Dictionary::Ptr IcingaDB::SerializeState(const Checkable::Ptr& checkable)
 			attrs->Set("normalized_performance_data", normedPerfData);
 
 		if (!cr->GetCommand().IsEmpty())
-			attrs->Set("commandline", FormatCommandLine(cr->GetCommand()));
+			attrs->Set("check_commandline", FormatCommandLine(cr->GetCommand()));
 		attrs->Set("execution_time", TimestampToMilliseconds(fmax(0.0, cr->CalculateExecutionTime())));
 		attrs->Set("latency", TimestampToMilliseconds(cr->CalculateLatency()));
 		attrs->Set("check_source", cr->GetCheckSource());
@@ -2487,7 +2609,7 @@ Dictionary::Ptr IcingaDB::SerializeState(const Checkable::Ptr& checkable)
 	attrs->Set("is_reachable", checkable->IsReachable());
 	attrs->Set("is_flapping", checkable->IsFlapping());
 
-	attrs->Set("acknowledgement", checkable->GetAcknowledgement());
+	attrs->Set("is_acknowledged", checkable->GetAcknowledgement());
 	if (checkable->IsAcknowledged()) {
 		Timestamp entry = 0;
 		Comment::Ptr AckComment;
@@ -2573,19 +2695,19 @@ IcingaDB::UpdateObjectAttrs(const ConfigObject::Ptr& object, int fieldType,
 	//m_Rcon->FireAndForgetQuery({"HSET", keyPrefix + typeName, GetObjectIdentifier(object), JsonEncode(attrs)});
 }
 
-void IcingaDB::StateChangeHandler(const ConfigObject::Ptr& object)
-{
-	auto checkable (dynamic_pointer_cast<Checkable>(object));
-
-	if (checkable) {
-		IcingaDB::StateChangeHandler(object, checkable->GetLastCheckResult(), checkable->GetStateType());
-	}
-}
-
 void IcingaDB::StateChangeHandler(const ConfigObject::Ptr& object, const CheckResult::Ptr& cr, StateType type)
 {
 	for (const IcingaDB::Ptr& rw : ConfigType::GetObjectsByType<IcingaDB>()) {
 		rw->SendStateChange(object, cr, type);
+	}
+}
+
+void IcingaDB::ReachabilityChangeHandler(const std::set<Checkable::Ptr>& children)
+{
+	for (const IcingaDB::Ptr& rw : ConfigType::GetObjectsByType<IcingaDB>()) {
+		for (auto& checkable : children) {
+			rw->UpdateState(checkable, StateUpdate::Full);
+		}
 	}
 }
 
@@ -2611,8 +2733,6 @@ void IcingaDB::VersionChangedHandler(const ConfigObject::Ptr& object)
 
 void IcingaDB::DowntimeStartedHandler(const Downtime::Ptr& downtime)
 {
-	StateChangeHandler(downtime->GetCheckable());
-
 	for (auto& rw : ConfigType::GetObjectsByType<IcingaDB>()) {
 		rw->SendStartedDowntime(downtime);
 	}
@@ -2620,8 +2740,6 @@ void IcingaDB::DowntimeStartedHandler(const Downtime::Ptr& downtime)
 
 void IcingaDB::DowntimeRemovedHandler(const Downtime::Ptr& downtime)
 {
-	StateChangeHandler(downtime->GetCheckable());
-
 	for (auto& rw : ConfigType::GetObjectsByType<IcingaDB>()) {
 		rw->SendRemovedDowntime(downtime);
 	}
@@ -2668,7 +2786,7 @@ void IcingaDB::FlappingChangeHandler(const Checkable::Ptr& checkable, double cha
 void IcingaDB::NewCheckResultHandler(const Checkable::Ptr& checkable)
 {
 	for (auto& rw : ConfigType::GetObjectsByType<IcingaDB>()) {
-		rw->UpdateState(checkable);
+		rw->UpdateState(checkable, StateUpdate::Volatile);
 		rw->SendNextUpdate(checkable);
 	}
 }
@@ -2676,8 +2794,15 @@ void IcingaDB::NewCheckResultHandler(const Checkable::Ptr& checkable)
 void IcingaDB::NextCheckChangedHandler(const Checkable::Ptr& checkable)
 {
 	for (auto& rw : ConfigType::GetObjectsByType<IcingaDB>()) {
-		rw->UpdateState(checkable);
+		rw->UpdateState(checkable, StateUpdate::Volatile);
 		rw->SendNextUpdate(checkable);
+	}
+}
+
+void IcingaDB::HostProblemChangedHandler(const Service::Ptr& service) {
+	for (auto& rw : ConfigType::GetObjectsByType<IcingaDB>()) {
+		/* Host state changes affect is_handled and severity of services. */
+		rw->UpdateState(service, StateUpdate::Full);
 	}
 }
 

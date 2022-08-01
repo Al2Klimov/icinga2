@@ -18,6 +18,7 @@ static Timer::Ptr l_CommentsExpireTimer;
 
 boost::signals2::signal<void (const Comment::Ptr&)> Comment::OnCommentAdded;
 boost::signals2::signal<void (const Comment::Ptr&)> Comment::OnCommentRemoved;
+boost::signals2::signal<void (const Comment::Ptr&, const String&, double, const MessageOrigin::Ptr&)> Comment::OnRemovalInfoChanged;
 
 REGISTER_TYPE(Comment);
 
@@ -130,7 +131,7 @@ int Comment::GetNextCommentID()
 }
 
 String Comment::AddComment(const Checkable::Ptr& checkable, CommentType entryType, const String& author,
-	const String& text, bool persistent, double expireTime, const String& id, const MessageOrigin::Ptr& origin)
+	const String& text, bool persistent, double expireTime, bool sticky, const String& id, const MessageOrigin::Ptr& origin)
 {
 	String fullName;
 
@@ -146,6 +147,7 @@ String Comment::AddComment(const Checkable::Ptr& checkable, CommentType entryTyp
 	attrs->Set("persistent", persistent);
 	attrs->Set("expire_time", expireTime);
 	attrs->Set("entry_type", entryType);
+	attrs->Set("sticky", sticky);
 	attrs->Set("entry_time", Utility::GetTime());
 
 	Host::Ptr host;
@@ -185,7 +187,8 @@ String Comment::AddComment(const Checkable::Ptr& checkable, CommentType entryTyp
 	return fullName;
 }
 
-void Comment::RemoveComment(const String& id, const MessageOrigin::Ptr& origin)
+void Comment::RemoveComment(const String& id, bool removedManually, const String& removedBy,
+	const MessageOrigin::Ptr& origin)
 {
 	Comment::Ptr comment = Comment::GetByName(id);
 
@@ -194,6 +197,10 @@ void Comment::RemoveComment(const String& id, const MessageOrigin::Ptr& origin)
 
 	Log(LogNotice, "Comment")
 		<< "Removed comment '" << comment->GetName() << "' from object '" << comment->GetCheckable()->GetName() << "'.";
+
+	if (removedManually) {
+		comment->SetRemovalInfo(removedBy, Utility::GetTime());
+	}
 
 	Array::Ptr errors = new Array();
 
@@ -205,6 +212,17 @@ void Comment::RemoveComment(const String& id, const MessageOrigin::Ptr& origin)
 
 		BOOST_THROW_EXCEPTION(std::runtime_error("Could not remove comment."));
 	}
+}
+
+void Comment::SetRemovalInfo(const String& removedBy, double removeTime, const MessageOrigin::Ptr& origin) {
+	{
+		ObjectLock olock(this);
+
+		SetRemovedBy(removedBy, false, origin);
+		SetRemoveTime(removeTime, false, origin);
+	}
+
+	OnRemovalInfoChanged(this, removedBy, removeTime, origin);
 }
 
 String Comment::GetCommentIDFromLegacyID(int id)

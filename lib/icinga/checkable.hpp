@@ -111,7 +111,14 @@ public:
 
 	void ExecuteRemoteCheck(const Dictionary::Ptr& resolvedMacros = nullptr);
 	void ExecuteCheck();
-	void ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrigin::Ptr& origin = nullptr);
+	enum class ProcessingResult
+	{
+		Ok,
+		NoCheckResult,
+		CheckableInactive,
+		NewerCheckResultPresent,
+	};
+	ProcessingResult ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrigin::Ptr& origin = nullptr);
 
 	Endpoint::Ptr GetCommandEndpoint() const;
 
@@ -191,6 +198,8 @@ public:
 	bool NotificationReasonSuppressed(NotificationType type);
 	bool IsLikelyToBeCheckedSoon();
 
+	void FireSuppressedNotifications();
+
 	static void IncreasePendingChecks();
 	static void DecreasePendingChecks();
 	static int GetPendingChecks();
@@ -222,7 +231,7 @@ private:
 
 	static void NotifyDowntimeEnd(const Downtime::Ptr& downtime);
 
-	static void FireSuppressedNotifications(const Timer * const&);
+	static void FireSuppressedNotificationsTimer(const Timer * const&);
 	static void CleanDeadlinedExecutions(const Timer * const&);
 
 	/* Comments */

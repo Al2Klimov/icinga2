@@ -29,6 +29,9 @@ public:
 	static void LastCheckStartedChangedHandler(const Checkable::Ptr& checkable, const MessageOrigin::Ptr& origin);
 	static Value LastCheckStartedChangedAPIHandler(const MessageOrigin::Ptr& origin, const Dictionary::Ptr& params);
 
+	static void StateBeforeSuppressionChangedHandler(const Checkable::Ptr& checkable, const MessageOrigin::Ptr& origin);
+	static Value StateBeforeSuppressionChangedAPIHandler(const MessageOrigin::Ptr& origin, const Dictionary::Ptr& params);
+
 	static void SuppressedNotificationsChangedHandler(const Checkable::Ptr& checkable, const MessageOrigin::Ptr& origin);
 	static Value SuppressedNotificationsChangedAPIHandler(const MessageOrigin::Ptr& origin, const Dictionary::Ptr& params);
 
@@ -68,6 +71,9 @@ public:
 	static Value NotificationSentToAllUsersAPIHandler(const MessageOrigin::Ptr& origin, const Dictionary::Ptr& params);
 	static Value ExecutedCommandAPIHandler(const MessageOrigin::Ptr& origin, const Dictionary::Ptr& params);
 	static Value UpdateExecutionsAPIHandler(const MessageOrigin::Ptr& origin, const Dictionary::Ptr& params);
+
+	static void SetRemovalInfoHandler(const ConfigObject::Ptr& obj, const String& removedBy, double removeTime, const MessageOrigin::Ptr& origin);
+	static Value SetRemovalInfoAPIHandler(const MessageOrigin::Ptr& origin, const Dictionary::Ptr& params);
 
 	static int GetCheckRequestQueueSize();
 	static void LogRemoteCheckQueueInformation();

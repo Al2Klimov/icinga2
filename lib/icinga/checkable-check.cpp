@@ -94,15 +94,17 @@ double Checkable::GetLastCheck() const
 	return schedule_end;
 }
 
-void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrigin::Ptr& origin)
+Checkable::ProcessingResult Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrigin::Ptr& origin)
 {
+	using Result = Checkable::ProcessingResult;
+
 	{
 		ObjectLock olock(this);
 		m_CheckRunning = false;
 	}
 
 	if (!cr)
-		return;
+		return Result::NoCheckResult;
 
 	double now = Utility::GetTime();
 
@@ -142,12 +144,12 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 			listener->SyncSendMessage(command_endpoint, message);
 		}
 
-		return;
+		return Result::Ok;
 
 	}
 
 	if (!IsActive())
-		return;
+		return Result::CheckableInactive;
 
 	bool reachable = IsReachable();
 	bool notification_reachable = IsReachable(DependencyNotification);
@@ -184,7 +186,7 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 					<< Utility::FormatDateTime("%Y-%m-%d %H:%M:%S %z", newCRTimestamp) << " (" << newCRTimestamp
 					<< "). It is in the past compared to ours at "
 					<< Utility::FormatDateTime("%Y-%m-%d %H:%M:%S %z", currentCRTimestamp) << " (" << currentCRTimestamp << ").";
-				return;
+				return Result::NewerCheckResultPresent;
 			}
 		}
 	}
@@ -215,10 +217,6 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 
 		ResetNotificationNumbers();
 		SaveLastState(ServiceOK, cr->GetExecutionEnd());
-
-		/* update reachability for child objects in OK state */
-		if (!children.empty())
-			OnReachabilityChanged(this, cr, children, origin);
 	} else {
 		/* OK -> NOT-OK change, first SOFT state. Reset attempt counter. */
 		if (IsStateOK(old_state)) {
@@ -240,24 +238,6 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 
 		if (!IsStateOK(cr->GetState())) {
 			SaveLastState(cr->GetState(), cr->GetExecutionEnd());
-		}
-
-		/* update reachability for child objects in NOT-OK state */
-		if (!children.empty())
-			OnReachabilityChanged(this, cr, children, origin);
-	}
-
-	if (recovery) {
-		for (auto& child : children) {
-			if (child->GetProblem() && child->GetEnableActiveChecks()) {
-				auto nextCheck (now + Utility::Random() % 60);
-
-				ObjectLock oLock (child);
-
-				if (nextCheck < child->GetNextCheck()) {
-					child->SetNextCheck(nextCheck);
-				}
-			}
 		}
 	}
 
@@ -288,20 +268,6 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 			(GetAcknowledgement() == AcknowledgementSticky && IsStateOK(new_state))) {
 			ClearAcknowledgement("");
 		}
-
-		/* reschedule direct parents */
-		for (const Checkable::Ptr& parent : GetParents()) {
-			if (parent.get() == this)
-				continue;
-
-			if (!parent->GetEnableActiveChecks())
-				continue;
-
-			if (parent->GetNextCheck() >= now + parent->GetRetryInterval()) {
-				ObjectLock olock(parent);
-				parent->SetNextCheck(now);
-			}
-		}
 	}
 
 	bool remove_acknowledgement_comments = false;
@@ -325,6 +291,8 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 	if (stateChange) {
 		SetLastSoftStatesRaw(GetLastSoftStatesRaw() / 100u + new_state * 100u);
 	}
+
+	cr->SetPreviousHardState(ServiceState(GetLastHardStatesRaw() % 100u));
 
 	if (!IsStateOK(new_state))
 		TriggerDowntimes(cr->GetExecutionEnd());
@@ -421,6 +389,36 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 		<< "% current: " << GetFlappingCurrent() << "%.";
 #endif /* I2_DEBUG */
 
+	if (recovery) {
+		for (auto& child : children) {
+			if (child->GetProblem() && child->GetEnableActiveChecks()) {
+				auto nextCheck (now + Utility::Random() % 60);
+
+				ObjectLock oLock (child);
+
+				if (nextCheck < child->GetNextCheck()) {
+					child->SetNextCheck(nextCheck);
+				}
+			}
+		}
+	}
+
+	if (stateChange) {
+		/* reschedule direct parents */
+		for (const Checkable::Ptr& parent : GetParents()) {
+			if (parent.get() == this)
+				continue;
+
+			if (!parent->GetEnableActiveChecks())
+				continue;
+
+			if (parent->GetNextCheck() >= now + parent->GetRetryInterval()) {
+				ObjectLock olock(parent);
+				parent->SetNextCheck(now);
+			}
+		}
+	}
+
 	OnNewCheckResult(this, cr, origin);
 
 	/* signal status updates to for example db_ido */
@@ -483,7 +481,12 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 
 	if (send_notification && !is_flapping) {
 		if (!IsPaused()) {
-			if (suppress_notification) {
+			/* If there are still some pending suppressed state notification, keep the suppression until these are
+			 * handled by Checkable::FireSuppressedNotifications().
+			 */
+			bool pending = GetSuppressedNotifications() & (NotificationRecovery|NotificationProblem);
+
+			if (suppress_notification || pending) {
 				suppressed_types |= (recovery ? NotificationRecovery : NotificationProblem);
 			} else {
 				OnNotificationsRequested(this, recovery ? NotificationRecovery : NotificationProblem, cr, "", "", nullptr);
@@ -500,18 +503,33 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 		int suppressed_types_before (GetSuppressedNotifications());
 		int suppressed_types_after (suppressed_types_before | suppressed_types);
 
-		for (int conflict : {NotificationProblem | NotificationRecovery, NotificationFlappingStart | NotificationFlappingEnd}) {
-			/* E.g. problem and recovery notifications neutralize each other. */
+		const int conflict = NotificationFlappingStart | NotificationFlappingEnd;
+		if ((suppressed_types_after & conflict) == conflict) {
+			/* Flapping start and end cancel out each other. */
+			suppressed_types_after &= ~conflict;
+		}
 
-			if ((suppressed_types_after & conflict) == conflict) {
-				suppressed_types_after &= ~conflict;
-			}
+		const int stateNotifications = NotificationRecovery | NotificationProblem;
+		if (!(suppressed_types_before & stateNotifications) && (suppressed_types & stateNotifications)) {
+			/* A state-related notification is suppressed for the first time, store the previous state. When
+			 * notifications are no longer suppressed, this can be compared with the current state to determine
+			 * if a notification must be sent. This is done differently compared to flapping notifications just above
+			 * as for state notifications, problem and recovery don't always cancel each other. For example,
+			 * WARNING -> OK -> CRITICAL generates both types once, but there should still be a notification.
+			 */
+			SetStateBeforeSuppression(old_stateType == StateTypeHard ? old_state : ServiceOK);
 		}
 
 		if (suppressed_types_after != suppressed_types_before) {
 			SetSuppressedNotifications(suppressed_types_after);
 		}
 	}
+
+	/* update reachability for child objects */
+	if ((stateChange || hardChange) && !children.empty())
+		OnReachabilityChanged(this, cr, children, origin);
+
+	return Result::Ok;
 }
 
 void Checkable::ExecuteRemoteCheck(const Dictionary::Ptr& resolvedMacros)

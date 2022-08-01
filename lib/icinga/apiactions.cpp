@@ -55,6 +55,8 @@ Dictionary::Ptr ApiActions::CreateResult(int code, const String& status,
 Dictionary::Ptr ApiActions::ProcessCheckResult(const ConfigObject::Ptr& object,
 	const Dictionary::Ptr& params)
 {
+	using Result = Checkable::ProcessingResult;
+
 	Checkable::Ptr checkable = static_pointer_cast<Checkable>(object);
 
 	if (!checkable)
@@ -123,9 +125,19 @@ Dictionary::Ptr ApiActions::ProcessCheckResult(const ConfigObject::Ptr& object,
 	if (params->Contains("ttl"))
 		cr->SetTtl(HttpUtility::GetLastParameter(params, "ttl"));
 
-	checkable->ProcessCheckResult(cr);
+	Result result = checkable->ProcessCheckResult(cr);
+	switch (result) {
+		case Result::Ok:
+			return ApiActions::CreateResult(200, "Successfully processed check result for object '" + checkable->GetName() + "'.");
+		case Result::NoCheckResult:
+			return ApiActions::CreateResult(400, "Could not process check result for object '" + checkable->GetName() + "' because no check result was passed.");
+		case Result::CheckableInactive:
+			return ApiActions::CreateResult(503, "Could not process check result for object '" + checkable->GetName() + "' because the object is inactive.");
+		case Result::NewerCheckResultPresent:
+			return ApiActions::CreateResult(409, "Newer check result already present. Check result for '" + checkable->GetName() + "' was discarded.");
+	}
 
-	return ApiActions::CreateResult(200, "Successfully processed check result for object '" + checkable->GetName() + "'.");
+	return ApiActions::CreateResult(500, "Unexpected result (" + std::to_string(static_cast<int>(result)) + ") for object '" + checkable->GetName() + "'. Please submit a bug report at https://github.com/Icinga/icinga2");
 }
 
 Dictionary::Ptr ApiActions::RescheduleCheck(const ConfigObject::Ptr& object,
@@ -243,7 +255,7 @@ Dictionary::Ptr ApiActions::AcknowledgeProblem(const ConfigObject::Ptr& object,
 	}
 
 	Comment::AddComment(checkable, CommentAcknowledgement, HttpUtility::GetLastParameter(params, "author"),
-		HttpUtility::GetLastParameter(params, "comment"), persistent, timestamp);
+		HttpUtility::GetLastParameter(params, "comment"), persistent, timestamp, sticky == AcknowledgementSticky);
 	checkable->AcknowledgeProblem(HttpUtility::GetLastParameter(params, "author"),
 		HttpUtility::GetLastParameter(params, "comment"), sticky, notify, persistent, Utility::GetTime(), timestamp);
 
@@ -311,12 +323,7 @@ Dictionary::Ptr ApiActions::RemoveComment(const ConfigObject::Ptr& object,
 		std::set<Comment::Ptr> comments = checkable->GetComments();
 
 		for (const Comment::Ptr& comment : comments) {
-			{
-				ObjectLock oLock (comment);
-				comment->SetRemovedBy(author);
-			}
-
-			Comment::RemoveComment(comment->GetName());
+			Comment::RemoveComment(comment->GetName(), true, author);
 		}
 
 		return ApiActions::CreateResult(200, "Successfully removed all comments for object '" + checkable->GetName() + "'.");
@@ -327,14 +334,9 @@ Dictionary::Ptr ApiActions::RemoveComment(const ConfigObject::Ptr& object,
 	if (!comment)
 		return ApiActions::CreateResult(404, "Cannot remove non-existent comment object.");
 
-	{
-		ObjectLock oLock (comment);
-		comment->SetRemovedBy(author);
-	}
-
 	String commentName = comment->GetName();
 
-	Comment::RemoveComment(commentName);
+	Comment::RemoveComment(commentName, true, author);
 
 	return ApiActions::CreateResult(200, "Successfully removed comment '" + commentName + "'.");
 }
@@ -507,15 +509,10 @@ Dictionary::Ptr ApiActions::RemoveDowntime(const ConfigObject::Ptr& object,
 		std::set<Downtime::Ptr> downtimes = checkable->GetDowntimes();
 
 		for (const Downtime::Ptr& downtime : downtimes) {
-			{
-				ObjectLock oLock (downtime);
-				downtime->SetRemovedBy(author);
-			}
-
 			childCount += downtime->GetChildren().size();
 
 			try {
-				Downtime::RemoveDowntime(downtime->GetName(), true, true);
+				Downtime::RemoveDowntime(downtime->GetName(), true, true, false, author);
 			} catch (const invalid_downtime_removal_error& error) {
 				Log(LogWarning, "ApiActions") << error.what();
 
@@ -532,16 +529,11 @@ Dictionary::Ptr ApiActions::RemoveDowntime(const ConfigObject::Ptr& object,
 	if (!downtime)
 		return ApiActions::CreateResult(404, "Cannot remove non-existent downtime object.");
 
-	{
-		ObjectLock oLock (downtime);
-		downtime->SetRemovedBy(author);
-	}
-
 	childCount += downtime->GetChildren().size();
 
 	try {
 		String downtimeName = downtime->GetName();
-		Downtime::RemoveDowntime(downtimeName, true, true);
+		Downtime::RemoveDowntime(downtimeName, true, true, false, author);
 
 		return ApiActions::CreateResult(200, "Successfully removed downtime '" + downtimeName +
 			"' and " + std::to_string(childCount) + " child downtimes.");

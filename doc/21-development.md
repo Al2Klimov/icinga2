@@ -477,18 +477,18 @@ File Type: EXECUTABLE IMAGE
 
   Image has the following dependencies:
 
-    boost_coroutine-vc142-mt-gd-x64-1_76.dll
-    boost_date_time-vc142-mt-gd-x64-1_76.dll
-    boost_filesystem-vc142-mt-gd-x64-1_76.dll
-    boost_thread-vc142-mt-gd-x64-1_76.dll
-    boost_regex-vc142-mt-gd-x64-1_76.dll
+    boost_coroutine-vc142-mt-gd-x64-1_79.dll
+    boost_date_time-vc142-mt-gd-x64-1_79.dll
+    boost_filesystem-vc142-mt-gd-x64-1_79.dll
+    boost_thread-vc142-mt-gd-x64-1_79.dll
+    boost_regex-vc142-mt-gd-x64-1_79.dll
     libssl-1_1-x64.dll
     libcrypto-1_1-x64.dll
     WS2_32.dll
     dbghelp.dll
     SHLWAPI.dll
     msi.dll
-    boost_unit_test_framework-vc142-mt-gd-x64-1_76.dll
+    boost_unit_test_framework-vc142-mt-gd-x64-1_79.dll
     KERNEL32.dll
     SHELL32.dll
     ADVAPI32.dll
@@ -539,7 +539,7 @@ on GitHub and mention that you're testing the snapshot packages.
 
 #### RHEL/CentOS <a id="development-tests-snapshot-packages-rhel"></a>
 
-2.11+ requires the [EPEL repository](02-installation.md#package-repositories-rhel-epel) for Boost 1.66+.
+2.11+ requires the EPEL repository for Boost 1.66+.
 
 In addition to that, the `icinga-rpm-release` package already provides the `icinga-snapshot-builds`
 repository but it is disabled by default.
@@ -1436,7 +1436,7 @@ vim /usr/local/icinga2/etc/icinga2/conf.d/api-users.conf
 
 Debian Buster doesn't need updated Boost packages from packages.icinga.com,
 the distribution already provides 1.66+. For older versions such as Stretch,
-include the release repository for packages.icinga.com as shown in the [setup instructions](02-installation.md#package-repositories-debian-ubuntu-raspbian).
+include the release repository for packages.icinga.com as shown in the [setup instructions](02-installation.md).
 
 ```bash
 docker run -ti debian:buster bash
@@ -1763,7 +1763,7 @@ mkdir build
 cd .\build\
 
 & "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" `
-  -DBoost_INCLUDE_DIR=C:\local\boost_1_76_0-Win64 `
+  -DBoost_INCLUDE_DIR=C:\local\boost_1_79_0-Win64 `
   -DBISON_EXECUTABLE=C:\ProgramData\chocolatey\lib\winflexbison3\tools\win_bison.exe `
   -DFLEX_EXECUTABLE=C:\ProgramData\chocolatey\lib\winflexbison3\tools\win_flex.exe `
   -DICINGA2_WITH_MYSQL=OFF -DICINGA2_WITH_PGSQL=OFF ..
@@ -1772,7 +1772,7 @@ cd .\build\
 ```
 
 Building icinga2.sln via Visual Studio itself seems to require a reboot
-after installing the build tools and building once via command line.
+after installing the build tools.
 
 #### Chocolatey
 
@@ -1936,16 +1936,16 @@ Download the [boost-binaries](https://sourceforge.net/projects/boost/files/boost
 - 64 for 64 bit builds
 
 ```
-https://sourceforge.net/projects/boost/files/boost-binaries/1.76.0/boost_1_76_0-msvc-14.2-64.exe/download
+https://sourceforge.net/projects/boost/files/boost-binaries/1.79.0/boost_1_79_0-msvc-14.2-64.exe/download
 ```
 
-Run the installer and leave the default installation path in `C:\local\boost_1_76_0`.
+Run the installer and leave the default installation path in `C:\local\boost_1_79_0`.
 
 
 ##### Source & Compile
 
 In order to use the boost development header and library files you need to [download](https://www.boost.org/users/download/)
-Boost and then extract it to e.g. `C:\local\boost_1_76_0`.
+Boost and then extract it to e.g. `C:\local\boost_1_79_0`.
 
 > **Note**
 >
@@ -1953,12 +1953,12 @@ Boost and then extract it to e.g. `C:\local\boost_1_76_0`.
 > the archive contains more than 70k files.
 
 In order to integrate Boost into Visual Studio, open the `Developer Command Prompt` from the start menu,
-and navigate to `C:\local\boost_1_76_0`.
+and navigate to `C:\local\boost_1_79_0`.
 
 Execute `bootstrap.bat` first.
 
 ```
-cd C:\local\boost_1_76_0
+cd C:\local\boost_1_79_0
 bootstrap.bat
 ```
 
@@ -2041,8 +2041,8 @@ You need to specify the previously installed component paths.
 
 Variable              | Value                                                                | Description
 ----------------------|----------------------------------------------------------------------|-------------------------------------------------------
-`BOOST_ROOT`          | `C:\local\boost_1_76_0`                                                    | Root path where you've extracted and compiled Boost.
-`BOOST_LIBRARYDIR`    | Binary: `C:\local\boost_1_76_0\lib64-msvc-14.2`, Source: `C:\local\boost_1_76_0\stage` | Path to the static compiled Boost libraries, directory must contain `lib`.
+`BOOST_ROOT`          | `C:\local\boost_1_79_0`                                                    | Root path where you've extracted and compiled Boost.
+`BOOST_LIBRARYDIR`    | Binary: `C:\local\boost_1_79_0\lib64-msvc-14.2`, Source: `C:\local\boost_1_79_0\stage` | Path to the static compiled Boost libraries, directory must contain `lib`.
 `BISON_EXECUTABLE`    | `C:\ProgramData\chocolatey\lib\winflexbison\tools\win_bison.exe`     | Path to the Bison executable.
 `FLEX_EXECUTABLE`     | `C:\ProgramData\chocolatey\lib\winflexbison\tools\win_flex.exe`      | Path to the Flex executable.
 `ICINGA2_WITH_MYSQL`  | OFF                                                                  | Requires extra setup for MySQL if set to `ON`. Not supported for client setups.
@@ -2079,8 +2079,8 @@ $env:ICINGA2_INSTALLPATH = 'C:\Program Files\Icinga2-debug'
 $env:ICINGA2_BUILDPATH='debug'
 $env:CMAKE_BUILD_TYPE='Debug'
 $env:OPENSSL_ROOT_DIR='C:\OpenSSL-Win64'
-$env:BOOST_ROOT='C:\local\boost_1_76_0'
-$env:BOOST_LIBRARYDIR='C:\local\boost_1_76_0\lib64-msvc-14.2'
+$env:BOOST_ROOT='C:\local\boost_1_79_0'
+$env:BOOST_LIBRARYDIR='C:\local\boost_1_79_0\lib64-msvc-14.2'
 ```
 
 #### Icinga 2 in Visual Studio
@@ -2696,4 +2696,3 @@ the duplicate import in your `~/.gdbinit` file.
 ```
 RuntimeError: pretty-printer already registered: libstdc++-v6
 ```
-

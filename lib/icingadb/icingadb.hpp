@@ -5,6 +5,8 @@
 
 #include "icingadb/icingadb-ti.hpp"
 #include "icingadb/redisconnection.hpp"
+#include "base/atomic.hpp"
+#include "base/bulker.hpp"
 #include "base/timer.hpp"
 #include "base/workqueue.hpp"
 #include "icinga/customvarobject.hpp"
@@ -13,6 +15,8 @@
 #include "icinga/downtime.hpp"
 #include "remote/messageorigin.hpp"
 #include <atomic>
+#include <chrono>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -41,6 +45,27 @@ public:
 
 	String GetEnvironmentId() const override;
 
+	inline RedisConnection::Ptr GetConnection()
+	{
+		return m_RconLocked.load();
+	}
+
+	template<class T>
+	static void AddKvsToMap(const Array::Ptr& kvs, T& map)
+	{
+		Value* key = nullptr;
+		ObjectLock oLock (kvs);
+
+		for (auto& kv : kvs) {
+			if (key) {
+				map.emplace(std::move(*key), std::move(kv));
+				key = nullptr;
+			} else {
+				key = &kv;
+			}
+		}
+	}
+
 protected:
 	void ValidateTlsProtocolmin(const Lazy<String>& lvalue, const ValidationUtils& utils) override;
 	void ValidateConnectTimeout(const Lazy<double>& lvalue, const ValidationUtils& utils) override;
@@ -57,6 +82,13 @@ private:
 		std::mutex m_Mutex;
 	};
 
+	enum StateUpdate
+	{
+		Volatile    = 1ull << 0,
+		RuntimeOnly = 1ull << 1,
+		Full        = Volatile | RuntimeOnly,
+	};
+
 	void OnConnectedHandler();
 
 	void PublishStatsTimerHandler();
@@ -70,12 +102,11 @@ private:
 	std::vector<String> GetTypeDumpSignalKeys(const Type::Ptr& type);
 	void InsertObjectDependencies(const ConfigObject::Ptr& object, const String typeName, std::map<String, std::vector<String>>& hMSets,
 			std::vector<Dictionary::Ptr>& runtimeUpdates, bool runtimeUpdate);
-	void UpdateState(const Checkable::Ptr& checkable);
+	void UpdateState(const Checkable::Ptr& checkable, StateUpdate mode);
 	void SendConfigUpdate(const ConfigObject::Ptr& object, bool runtimeUpdate);
 	void CreateConfigUpdate(const ConfigObject::Ptr& object, const String type, std::map<String, std::vector<String>>& hMSets,
 			std::vector<Dictionary::Ptr>& runtimeUpdates, bool runtimeUpdate);
 	void SendConfigDelete(const ConfigObject::Ptr& object);
-	void SendStatusUpdate(const Checkable::Ptr& checkable);
 	void SendStateChange(const ConfigObject::Ptr& object, const CheckResult::Ptr& cr, StateType type);
 	void AddObjectDataToRuntimeUpdates(std::vector<Dictionary::Ptr>& runtimeUpdates, const String& objectKey,
 			const String& redisKey, const Dictionary::Ptr& data);
@@ -105,6 +136,8 @@ private:
 	void SendCommandArgumentsChanged(const ConfigObject::Ptr& command, const Dictionary::Ptr& oldValues, const Dictionary::Ptr& newValues);
 	void SendCustomVarsChanged(const ConfigObject::Ptr& object, const Dictionary::Ptr& oldValues, const Dictionary::Ptr& newValues);
 
+	void ForwardHistoryEntries();
+
 	std::vector<String> UpdateObjectAttrs(const ConfigObject::Ptr& object, int fieldType, const String& typeNameOverride);
 	Dictionary::Ptr SerializeState(const Checkable::Ptr& checkable);
 
@@ -130,7 +163,7 @@ private:
 	static String GetLowerCaseTypeNameDB(const ConfigObject::Ptr& obj);
 	static bool PrepareObject(const ConfigObject::Ptr& object, Dictionary::Ptr& attributes, Dictionary::Ptr& checkSums);
 
-	static void StateChangeHandler(const ConfigObject::Ptr& object);
+	static void ReachabilityChangeHandler(const std::set<Checkable::Ptr>& children);
 	static void StateChangeHandler(const ConfigObject::Ptr& object, const CheckResult::Ptr& cr, StateType type);
 	static void VersionChangedHandler(const ConfigObject::Ptr& object);
 	static void DowntimeStartedHandler(const Downtime::Ptr& downtime);
@@ -146,6 +179,7 @@ private:
 	static void FlappingChangeHandler(const Checkable::Ptr& checkable, double changeTime);
 	static void NewCheckResultHandler(const Checkable::Ptr& checkable);
 	static void NextCheckChangedHandler(const Checkable::Ptr& checkable);
+	static void HostProblemChangedHandler(const Service::Ptr& service);
 	static void AcknowledgementSetHandler(const Checkable::Ptr& checkable, const String& author, const String& comment, AcknowledgementType type, bool persistent, double changeTime, double expiry);
 	static void AcknowledgementClearedHandler(const Checkable::Ptr& checkable, const String& removedBy, double changeTime);
 	static void NotificationUsersChangedHandler(const Notification::Ptr& notification, const Array::Ptr& oldValues, const Array::Ptr& newValues);
@@ -166,8 +200,14 @@ private:
 
 	static std::vector<Type::Ptr> GetTypes();
 
+	static void InitEnvironmentId();
+	static void PersistEnvironmentId();
+
 	Timer::Ptr m_StatsTimer;
 	WorkQueue m_WorkQueue{0, 1, LogNotice};
+
+	std::future<void> m_HistoryThread;
+	Bulker<RedisConnection::Query> m_HistoryBulker {4096, std::chrono::milliseconds(250)};
 
 	String m_PrefixConfigObject;
 	String m_PrefixConfigCheckSum;
@@ -176,6 +216,10 @@ private:
 	bool m_ConfigDumpDone;
 
 	RedisConnection::Ptr m_Rcon;
+	// m_RconLocked containes a copy of the value in m_Rcon where all accesses are guarded by a mutex to allow safe
+	// concurrent access like from the icingadb check command. It's a copy to still allow fast access without additional
+	// syncronization to m_Rcon within the IcingaDB feature itself.
+	Locked<RedisConnection::Ptr> m_RconLocked;
 	std::unordered_map<ConfigType*, RedisConnection::Ptr> m_Rcons;
 	std::atomic_size_t m_PendingRcons;
 
@@ -183,8 +227,11 @@ private:
 		DumpedGlobals CustomVar, ActionUrl, NotesUrl, IconImage;
 	} m_DumpedGlobals;
 
+	// m_EnvironmentId is shared across all IcingaDB objects (typically there is at most one, but it is perfectly fine
+	// to have multiple ones). It is initialized once (synchronized using m_EnvironmentIdInitMutex). After successful
+	// initialization, the value is read-only and can be accessed without further synchronization.
 	static String m_EnvironmentId;
-	static std::once_flag m_EnvironmentIdOnce;
+	static std::mutex m_EnvironmentIdInitMutex;
 };
 }
 

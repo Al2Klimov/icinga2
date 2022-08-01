@@ -103,6 +103,24 @@ cluster\_zone          | **Required.** The zone name. Defaults to `$host.name$`.
 cluster\_lag\_warning  | **Optional.** Warning threshold for log lag in seconds. Applies if the log lag is greater than the threshold.
 cluster\_lag\_critical | **Optional.** Critical threshold for log lag in seconds. Applies if the log lag is greater than the threshold.
 
+### icingadb <a id="itl-icinga-icingadb"></a>
+
+Check command for the built-in `icingadb` check.
+
+Custom variables passed as [command parameters](03-monitoring-basics.md#command-passing-parameters):
+
+Name                                     | Description
+-----------------------------------------|-----------------------------
+icingadb\_name                           | **Required.** The name of the Icinga DB connection object. Defaults to `icingadb`.
+icingadb\_full\_dump\_duration\_warning  | **Optional.** Warning threshold for ongoing Redis dump duration. Applies if the value is higher than the threshold. Defaults to 5 minutes.
+icingadb\_full\_dump\_duration\_critical | **Optional.** Critical threshold for ongoing Redis dump duration. Applies if the value is higher than the threshold. Defaults to 10 minutes.
+icingadb\_full\_sync\_duration\_warning  | **Optional.** Warning threshold for ongoing database sync duration. Applies if the value is higher than the threshold. Defaults to 5 minutes.
+icingadb\_full\_sync\_duration\_critical | **Optional.** Critical threshold for ongoing database sync duration. Applies if the value is higher than the threshold. Defaults to 10 minutes.
+icingadb\_redis\_backlog\_warning        | **Optional.** Warning threshold for Redis write backlog. Applies if the value is higher than the threshold. Defaults to 5 minutes.
+icingadb\_redis\_backlog\_critical       | **Optional.** Critical threshold for Redis write backlog. Applies if the value is higher than the threshold. Defaults to 15 minutes.
+icingadb\_database\_backlog\_warning     | **Optional.** Warning threshold for database sync backlog. Applies if the value is higher than the threshold. Defaults to 5 minutes.
+icingadb\_database\_backlog\_critical    | **Optional.** Critical threshold for database sync backlog. Applies if the value is higher than the threshold. Defaults to 15 minutes.
+
 ### ido <a id="itl-icinga-ido"></a>
 
 Check command for the built-in `ido` check.
@@ -796,6 +814,7 @@ Custom variables passed as [command parameters](03-monitoring-basics.md#command-
 
 Name			| Description
 ------------------------|---------------------------------------------------------------
+mysql_extra_opts	| **Optional.** Read options from an ini file.
 mysql_hostname		| **Optional.** Host name, IP Address, or unix socket (must be an absolute path).
 mysql_port		| **Optional.** Port number (default: 3306).
 mysql_socket		| **Optional.** Use the specified socket (has no effect if `mysql_hostname` is used).
@@ -881,6 +900,7 @@ nrpe_arguments	| **Optional.** Arguments that should be passed to the command. M
 nrpe_ipv4       | **Optional.** Use IPv4 connection. Defaults to false.
 nrpe_ipv6       | **Optional.** Use IPv6 connection. Defaults to false.
 nrpe_version_2	| **Optional.** Use this if you want to connect using NRPE v2 protocol (needed for NSClient++). Defaults to false.
+nrpe_version_3	| **Optional.** Use this if you want to connect using NRPE v3 protocol. Defaults to false.
 nrpe_payload_size	| **Optional.** Specify non-default payload size for NSClient++. Default is 1024.
 nrpe_ca		| **Optional.** The CA file to use for PKI. Defaults to none.
 nrpe_cert	| **Optional.** The client cert file to use for PKI. Defaults to none.
@@ -888,6 +908,7 @@ nrpe_key	| **Optional.** The client key file to use for PKI. Defaults to none.
 nrpe_ssl_version	| **Optional.** The SSL/TLS version to use. Defaults to TLSv1+.
 nrpe_cipher_list	| **Optional.** The list of SSL ciphers to use. Default depends on check_nrpe version.
 nrpe_dh_opt	| **Optional.** Anonymous Diffie Hellman use: 0 = deny, 1 = allow, 2 = force. Default depends on check_nrpe version.
+nrpe_no_logging	| **Optional.** Disable logging of check_nrpe to syslog facilities (requires check_nrpe >= 4.0).
 
 
 ### nscp <a id="plugin-check-command-nscp"></a>
@@ -971,6 +992,7 @@ Custom variables passed as [command parameters](03-monitoring-basics.md#command-
 
 Name			| Description
 ------------------------|---------------------------------------------------------------
+pgsql_extra_opts	| **Optional.** Read options from an ini file.
 pgsql_hostname		| **Optional.** Host name, IP Address, or unix socket (must be an absolute path).
 pgsql_port		| **Optional.** Port number (default: 5432).
 pgsql_database		| **Optional.** Database to check (default: template1).
@@ -1361,7 +1383,7 @@ ssl_port                      | **Optional.** The port that should be checked. D
 ssl_timeout                   | **Optional.** Timeout in seconds for the connect and handshake. The plugin default is 10 seconds.
 ssl_cert_valid_days_warn      | **Optional.** Warning threshold for days before the certificate will expire. When used, the default for ssl_cert_valid_days_critical is 0.
 ssl_cert_valid_days_critical  | **Optional.** Critical threshold for days before the certificate will expire. When used, ssl_cert_valid_days_warn must also be set.
-ssl_sni                       | **Optional.** The `server_name` that is send to select the SSL certificate to check. Important if SNI is used.
+ssl_sni                       | **Optional.** The `server_name` that is sent to select the SSL certificate to check. Important if SNI is used.
 
 
 ### ssmtp <a id="plugin-check-command-ssmtp"></a>
@@ -1434,6 +1456,7 @@ tcp_maxbytes    | **Optional.** Close connection once more than this number of b
 tcp_delay       | **Optional.** Seconds to wait between sending string and polling for response.
 tcp_certificate | **Optional.** Minimum number of days a certificate has to be valid. 1st value is number of days for warning, 2nd is critical (if not specified: 0) -- separated by comma.
 tcp_ssl         | **Optional.** Use SSL for the connection. Defaults to false.
+tcp_sni         | **Optional.** Hostname to send in the `server_name` (SNI) SSL/TLS extension.
 tcp_wtime       | **Optional.** Response time to result in warning status (seconds).
 tcp_ctime       | **Optional.** Response time to result in critical status (seconds).
 tcp_timeout     | **Optional.** Seconds before connection times out. Defaults to 10.
@@ -2839,6 +2862,11 @@ icingacli_businessprocess_process         | **Required.** Business process to mo
 icingacli_businessprocess_config          | **Optional.** Configuration file containing your business process without file extension.
 icingacli_businessprocess_details         | **Optional.** Get details for root cause analysis. Defaults to false.
 icingacli_businessprocess_statetype       | **Optional.** Define which state type to look at, `soft` or `hard`. Overrides the default value inside the businessprocess module, if configured.
+icingacli_businessprocess_ackisok         | **Optional.** Treat acknowledged hosts/services always as UP/OK.
+icingacli_businessprocess_blame           | **Optional.** Show problem details as a tree reduced to the nodes which have the same state as the business process.
+icingacli_businessprocess_colors          | **Optional.** Show colored output.
+icingacli_businessprocess_downtimeisok    | **Optional.** Treat hosts/services in downtime always as UP/OK.
+icingacli_businessprocess_rootcause       | **Optional.** Used in combination with *icingacli_businessprocess_blame*. Only shows the paths of the nodes which are responsible for the state of the business process.
 
 #### Director <a id="plugin-contrib-icingacli-director"></a>
 
@@ -3484,13 +3512,14 @@ compared to thresholds. More details can be found on [this blog entry](http://sy
 
 Custom variables passed as [command parameters](03-monitoring-basics.md#command-passing-parameters):
 
-Name         | Description
--------------|-----------------------------------------------------------------------------------------------------------------------
-mem_used     | **Optional.** Tell the plugin to check for used memory in opposite of **mem_free**. Must specify one of these as true.
-mem_free     | **Optional.** Tell the plugin to check for free memory in opposite of **mem_used**. Must specify one of these as true.
-mem_cache    | **Optional.** If set to true, plugin will count cache as free memory. Defaults to false.
-mem_warning  | **Required.** Specify the warning threshold as number interpreted as percent.
-mem_critical | **Required.** Specify the critical threshold as number interpreted as percent.
+Name          | Description
+--------------|-----------------------------------------------------------------------------------------------------------------------
+mem_used      | **Optional.** Tell the plugin to check for used memory to the exclusion of **mem_free** and **mem_available**. Must specify one of these as true.
+mem_free      | **Optional.** Tell the plugin to check for free memory to the exclusion of **mem_used** and **mem_available**. Must specify one of these as true.
+mem_available | **Optional.** Tell the plugin to check available memory to the exclusion of **mem_free** and **mem_used**. Must specify one of these as true.
+mem_cache     | **Optional.** If set to true, plugin will count cache as free memory. Defaults to false.
+mem_warning   | **Required.** Specify the warning threshold as number interpreted as percent.
+mem_critical  | **Required.** Specify the critical threshold as number interpreted as percent.
 
 #### sar-perf <a id="plugin-contrib-command-sar-perf"></a>
 
@@ -3670,7 +3699,7 @@ This category includes all plugins for various virtualization technologies.
 
 The [check_esxi_hardware.py](https://www.claudiokuenzler.com/monitoring-plugins/check_esxi_hardware.php) plugin
 uses the [pywbem](https://pywbem.github.io/pywbem/) Python library to monitor the hardware of ESXi servers
-through the [VMWare API](https://www.vmware.com/support/pubs/sdk_pubs.html) and CIM service.
+through the [VMWare CIM API](https://developer.vmware.com/apis/207/cim).
 
 Custom variables passed as [command parameters](03-monitoring-basics.md#command-passing-parameters):
 
@@ -3686,6 +3715,8 @@ esxi_hardware_html      | **Optional.** Add web-links to hardware manuals for De
 esxi_hardware_ignore    | **Optional.** Comma separated list of CIM elements to ignore.
 esxi_hardware_regex     | **Optional.** Allow regular expression lookups of elements in ignore list. Defaults to false.
 esxi_hardware_perfdata  | **Optional.** Add performcedata for graphers like PNP4Nagios to the output. Defaults to false.
+esxi_hardware_format    | **Optional.** Set output format to string or json. Defaults to string.
+esxi_hardware_pretty    | **Optional.** Show plugin output in a human readable format. Only useful with **esxi_hardware_format** = json.
 esxi_hardware_nopower   | **Optional.** Do not collect power performance data, when **esxi_hardware_perfdata** is set to true. Defaults to false.
 esxi_hardware_novolts   | **Optional.** Do not collect voltage performance data, when **esxi_hardware_perfdata** is set to true. Defaults to false.
 esxi_hardware_nocurrent | **Optional.** Do not collect current performance data, when **esxi_hardware_perfdata** is set to true. Defaults to false.

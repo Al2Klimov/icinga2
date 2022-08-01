@@ -1572,12 +1572,18 @@ send notifications to all group members.
 > Only users who have been notified of a problem before  (`Warning`, `Critical`, `Unknown`
 states for services, `Down` for hosts) will receive `Recovery` notifications.
 
-Icinga 2 v2.10 allows you to configure `Acknowledgement` and/or `Recovery`
+Icinga 2 v2.10 allows you to configure a `User` object with `Acknowledgement` and/or `Recovery`
 without a `Problem` notification. These notifications will be sent without
 any problem notifications beforehand, and can be used for e.g. ticket systems.
 
 ```
+object User "ticketadmin" {
+  display_name = "Ticket Admin"
+  enable_notifications = true
+  states = [ OK, Warning, Critical ]
   types = [ Acknowledgement, Recovery ]
+  email = "ticket@localhost"
+}
 ```
 
 ### Notifications: Users from Host/Service <a id="alert-notifications-users-host-service"></a>
@@ -1938,7 +1944,7 @@ The check command parameters for ITL provided plugin check command definitions a
 
 In order to practice passing command parameters you should [integrate your own plugin](03-monitoring-basics.md#command-plugin-integration).
 
-The following example will use `check_mysql` provided by the [Monitoring Plugins installation](02-installation.md#setting-up-check-plugins).
+The following example will use `check_mysql` provided by the [Monitoring Plugins](https://www.monitoring-plugins.org/).
 
 Define the default check command custom variables, for example `mysql_user` and `mysql_password`
 (freely definable naming schema) and optional their default threshold values. You can

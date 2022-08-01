@@ -856,7 +856,7 @@ $ ICINGA2_API_PASSWORD=icinga icinga2 console --connect 'https://root@localhost:
 "icinga2-agent1.localdomain"
 ```
 
-Whenever a notification command failed to execute, you can fetch the output as well. 
+Whenever a notification command failed to execute, you can fetch the output as well.
 
 
 ## Feature Troubleshooting <a id="troubleshooting-features"></a>
@@ -1628,53 +1628,26 @@ In order to solve this problem, remove the mentioned files from `zones.d` and us
 of syncing plugin binaries to your satellites and agents.
 
 
-#### Zones in Zones doesn't work <a id="troubleshooting-cluster-config-zones-in-zones"></a>
+#### Zones in Zones <a id="troubleshooting-cluster-config-zones-in-zones"></a>
 
-The cluster config sync works in the way that configuration
-put into `/etc/icinga2/zones.d` only is included when configured
-outside in `/etc/icinga2/zones.conf`.
+The cluster config sync works in a such manner that any `/etc/icinga2/zones.d/` subdirectory is included only when it is
+named after a known zone by the local `Endpoint`.
 
-If you for example create a "Zone Inception" with defining the
-`satellite` zone in `zones.d/master`, the config compiler does not
-re-run and include this zone config recursively from `zones.d/satellite`.
+If you for example add some configs in to `zones.d/satellite` and forgot to define the `satellite` zone
+in `zones.d/master` or outside in `/etc/icinga2/zones.conf`, the config compiler will not include
+this config from the `zones.d/satellite` zone directory.
 
 Since v2.11, the config compiler is only including directories where a
-zone has been configured. Otherwise it would include renamed old zones,
+zone has been configured. Otherwise, it would include renamed old zones,
 broken zones, etc. and those long-lasting bugs have been now fixed.
 
-A more concrete example: Masters and Satellites still need to know the Zone hierarchy outside of `zones.d` synced configuration.
+Here are some working examples:
 
-**Doesn't work**
+**Example: Everything in `zones.conf`**
 
-```
-vim /etc/icinga2/zones.conf
-
-object Zone "master" {
-  endpoints = [ "icinga2-master1.localdomain", "icinga2-master2.localdomain" ]
-}
-```
-
-```
-vim /etc/icinga2/zones.d/master/satellite-zones.conf
-
-object Zone "satellite" {
-  endpoints = [ "icinga2-satellite1.localdomain", "icinga2-satellite1.localdomain" ]
-}
-```
-
-```
-vim /etc/icinga2/zones.d/satellite/satellite-hosts.conf
-
-object Host "agent" { ... }
-```
-
-The `agent` host object will never reach the satellite, since the master does not have
-the `satellite` zone configured outside of zones.d.
-
-
-**Works**
-
-Each instance needs to know this, and know about the endpoints first:
+Each instance needs to know the `Zone` and `Endpoint` definitions for itself and all directly connected instances in order
+to successfully establish a connection with each other. This can be achieved by placing all `Endpoint` and `Zone` definitions
+of all Icinga 2 instances known by the local endpoint in this single file.
 
 ```
 vim /etc/icinga2/zones.conf
@@ -1682,22 +1655,39 @@ vim /etc/icinga2/zones.conf
 object Endpoint "icinga2-master1.localdomain" { ... }
 object Endpoint "icinga2-master2.localdomain" { ... }
 
-object Endpoint "icinga2-satellite1.localdomain" { ... }
-object Endpoint "icinga2-satellite2.localdomain" { ... }
-```
-
-Then the zone hierarchy as trust and also config sync inclusion is required.
-
-```
-vim /etc/icinga2/zones.conf
-
 object Zone "master" {
   endpoints = [ "icinga2-master1.localdomain", "icinga2-master2.localdomain" ]
 }
 
+object Endpoint "icinga2-satellite1.localdomain" { ... }
+object Endpoint "icinga2-satellite2.localdomain" { ... }
+
 object Zone "satellite" {
   endpoints = [ "icinga2-satellite1.localdomain", "icinga2-satellite1.localdomain" ]
+  parent = "master"
 }
+```
+
+**Example: Child zones in `zones.d/`**
+
+An additional option that Icinga 2 offers is the possibility to outsource all *child* `Endpoint` definitions of the
+local Icinga 2 instance to the `zones.d/` directory. As an example, we can place the satellite `Zone` and `Endpoint` definition
+from the above example into `zones.d/` underneath a directory named exactly like the local endpoint `Zone` name, which
+in our case is `master`.
+
+```
+mkdir /etc/icinga2/zones.d/master
+vim /etc/icinga2/zones.d/master/satellite.conf
+
+object Endpoint "icinga2-satellite1.localdomain" { ... }
+object Endpoint "icinga2-satellite2.localdomain" { ... }
+
+object Zone "satellite" {
+  endpoints = [ "icinga2-satellite1.localdomain", "icinga2-satellite1.localdomain" ]
+  parent = "master"
+}
+
+...
 ```
 
 Once done, you can start deploying actual monitoring objects into the satellite zone.
@@ -1708,10 +1698,12 @@ vim /etc/icinga2/zones.d/satellite/satellite-hosts.conf
 object Host "agent" { ... }
 ```
 
-That's also explained and described in the [documentation](06-distributed-monitoring.md#distributed-monitoring-scenarios-master-satellite-agents).
+Keep in mind that the `agent` host object will never reach the satellite, when the master does not have the
+`satellite` zone configured either in `zones.d/master` nor outside the `zones.d` directory. That's also explained and
+described in the [documentation](06-distributed-monitoring.md#distributed-monitoring-scenarios-master-satellite-agents).
 
 The thing you can do: For `command_endpoint` agents like inside the Director:
-Host -> Agent -> yes, there is no config sync for this zone in place. Therefore
+Host -> Agent -> yes, there is no config sync for this zone in place. Therefore,
 it is valid to just sync their zones via the config sync.
 
 #### Director Changes
@@ -1745,7 +1737,7 @@ object Endpoint "icinga-satellite2.localdomain" {
 // That's no different to what is explained in the docs as basic zone trust hierarchy, and is intentionally managed outside in zones.conf there.
 
 object Zone "master" {
-  endpoints = [ "icinga-master1.localdomain", "icinga-master2.localdomain" ] 
+  endpoints = [ "icinga-master1.localdomain", "icinga-master2.localdomain" ]
 }
 
 object Zone "satellite" {
@@ -1754,21 +1746,21 @@ object Zone "satellite" {
 }
 ```
 
-Prepare the above configuration on all affected nodes, satellites are likely uptodate already. 
+Prepare the above configuration on all affected nodes, satellites are likely uptodate already.
 Then continue with the steps below.
 
 > * backup your database, just to be on the safe side
 > * create all non-external Zone/Endpoint-Objects on all related Icinga Master/Satellite-Nodes (manually in your local zones.conf)
 > * while doing so please do NOT restart Icinga, no deployments
 > * change the type in the Director DB:
-> 
+>
 > ```sql
 > UPDATE icinga_zone SET object_type = 'external_object' WHERE object_type = 'object';
 > UPDATE icinga_endpoint SET object_type = 'external_object' WHERE object_type = 'object';
 > ```
-> 
+>
 > * render and deploy a new configuration in the Director. It will state that there are no changes. Ignore it, deploy anyways
-> 
+>
 > That's it. All nodes should automatically restart, triggered by the deployed configuration via cluster protocol.
 
 
@@ -1788,7 +1780,7 @@ certificate's CN, the master will deny all events.
 
 > **Tip**
 >
-> [Icinga Web 2](02-installation.md#setting-up-icingaweb2) provides a dashboard view
+> [Icinga Web 2](https://icinga.com/docs/icinga-web-2/latest/doc/01-About/) provides a dashboard view
 > for overdue check results.
 
 Enable the [debug log](15-troubleshooting.md#troubleshooting-enable-debug-output) on the master

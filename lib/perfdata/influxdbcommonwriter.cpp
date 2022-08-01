@@ -97,7 +97,8 @@ void InfluxdbCommonWriter::Resume()
 	m_FlushTimer->Reschedule(0);
 
 	/* Register for new metrics. */
-	Checkable::OnNewCheckResult.connect([this](const Checkable::Ptr& checkable, const CheckResult::Ptr& cr, const MessageOrigin::Ptr&) {
+	m_HandleCheckResults = Checkable::OnNewCheckResult.connect([this](const Checkable::Ptr& checkable,
+		const CheckResult::Ptr& cr, const MessageOrigin::Ptr&) {
 		CheckResultHandler(checkable, cr);
 	});
 }
@@ -105,6 +106,8 @@ void InfluxdbCommonWriter::Resume()
 /* Pause is equivalent to Stop, but with HA capabilities to resume at runtime. */
 void InfluxdbCommonWriter::Pause()
 {
+	m_HandleCheckResults.disconnect();
+
 	/* Force a flush. */
 	Log(LogDebug, GetReflectionType()->GetName())
 		<< "Processing pending tasks and flushing data buffers.";
@@ -192,7 +195,7 @@ OptionalTlsStream InfluxdbCommonWriter::Connect()
 		}
 	}
 
-	return std::move(stream);
+	return stream;
 }
 
 void InfluxdbCommonWriter::CheckResultHandler(const Checkable::Ptr& checkable, const CheckResult::Ptr& cr)
@@ -540,7 +543,7 @@ boost::beast::http::request<boost::beast::http::string_body> InfluxdbCommonWrite
 	request.body() = std::move(body);
 	request.content_length(request.body().size());
 
-	return std::move(request);
+	return request;
 }
 
 Url::Ptr InfluxdbCommonWriter::AssembleBaseUrl()
@@ -552,7 +555,7 @@ Url::Ptr InfluxdbCommonWriter::AssembleBaseUrl()
 	url->SetPort(GetPort());
 	url->AddQueryElement("precision", "s");
 
-	return std::move(url);
+	return url;
 }
 
 void InfluxdbCommonWriter::ValidateHostTemplate(const Lazy<Dictionary::Ptr>& lvalue, const ValidationUtils& utils)

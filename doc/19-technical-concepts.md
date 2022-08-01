@@ -451,71 +451,7 @@ The severity value is pre-calculated for visualization interfaces
 such as Icinga Web which sorts the problem dashboard by severity by default.
 
 The higher the severity number is, the more important the problem is.
-
-Flags:
-
-```cpp
-/**
- * Severity Flags
- *
- * @ingroup icinga
- */
-enum SeverityFlag
-{
-	SeverityFlagDowntime = 1,
-	SeverityFlagAcknowledgement = 2,
-	SeverityFlagHostDown = 4,
-	SeverityFlagUnhandled = 8,
-	SeverityFlagPending = 16,
-	SeverityFlagWarning = 32,
-	SeverityFlagUnknown = 64,
-	SeverityFlagCritical = 128,
-};
-```
-
-
-Host:
-
-```cpp
-	/* OK/Warning = Up, Critical/Unknown = Down */
-	if (!HasBeenChecked())
-		severity |= SeverityFlagPending;
-	else if (state == ServiceUnknown)
-		severity |= SeverityFlagCritical;
-	else if (state == ServiceCritical)
-		severity |= SeverityFlagCritical;
-
-	if (IsInDowntime())
-		severity |= SeverityFlagDowntime;
-	else if (IsAcknowledged())
-		severity |= SeverityFlagAcknowledgement;
-	else
-		severity |= SeverityFlagUnhandled;
-```
-
-
-Service:
-
-```cpp
-	if (!HasBeenChecked())
-		severity |= SeverityFlagPending;
-	else if (state == ServiceWarning)
-		severity |= SeverityFlagWarning;
-	else if (state == ServiceUnknown)
-		severity |= SeverityFlagUnknown;
-	else if (state == ServiceCritical)
-		severity |= SeverityFlagCritical;
-
-	if (IsInDowntime())
-		severity |= SeverityFlagDowntime;
-	else if (IsAcknowledged())
-		severity |= SeverityFlagAcknowledgement;
-	else if (m_Host->GetProblem())
-		severity |= SeverityFlagHostDown;
-	else
-		severity |= SeverityFlagUnhandled;
-```
-
+However, the formula can change across Icinga 2 releases.
 
 
 ## Cluster <a id="technical-concepts-cluster"></a>
@@ -1434,6 +1370,43 @@ Message updates will be dropped when:
 * Checkable does not exist.
 * Origin endpoint's zone is not allowed to access this checkable.
 
+#### event::SetStateBeforeSuppression <a id="technical-concepts-json-rpc-messages-event-setstatebeforesuppression"></a>
+
+> Location: `clusterevents.cpp`
+
+##### Message Body
+
+Key       | Value
+----------|---------------------------------
+jsonrpc   | 2.0
+method    | event::SetStateBeforeSuppression
+params    | Dictionary
+
+##### Params
+
+Key                        | Type   | Description
+---------------------------|--------|-----------------------------------------------
+host                       | String | Host name
+service                    | String | Service name
+state\_before\_suppression | Number | Checkable state before the current suppression
+
+##### Functions
+
+Event Sender: `Checkable::OnStateBeforeSuppressionChanged`
+Event Receiver: `StateBeforeSuppressionChangedAPIHandler`
+
+Used to sync the checkable state from before a notification suppression (for example
+because the checkable is in a downtime) started within the same HA zone.
+
+##### Permissions
+
+The receiver will not process messages from not configured endpoints.
+
+Message updates will be dropped when:
+
+* Checkable does not exist.
+* Origin endpoint is not within the local zone.
+
 #### event::SetSuppressedNotifications <a id="technical-concepts-json-rpc-messages-event-setsupressednotifications"></a>
 
 > Location: `clusterevents.cpp`
@@ -1866,7 +1839,7 @@ The returned messages are synced directly to the sender's endpoint, no cluster b
 
 > **Note**: EventCommand errors are just logged on the remote endpoint.
 
-### event::UpdateExecutions <a id="technical-concepts-json-rpc-messages-event-updateexecutions"></a>
+#### event::UpdateExecutions <a id="technical-concepts-json-rpc-messages-event-updateexecutions"></a>
 
 > Location: `clusterevents.cpp`
 
@@ -1900,7 +1873,7 @@ Message updates will be dropped when:
 * Checkable does not exist.
 * Origin endpoint's zone is not allowed to access this checkable.
 
-### event::ExecutedCommand <a id="technical-concepts-json-rpc-messages-event-executedcommand"></a>
+#### event::ExecutedCommand <a id="technical-concepts-json-rpc-messages-event-executedcommand"></a>
 
 > Location: `clusterevents.cpp`
 
@@ -1937,6 +1910,39 @@ Message updates will be dropped when:
 
 * Checkable does not exist.
 * Origin endpoint's zone is not allowed to access this checkable.
+
+#### event::SetRemovalInfo <a id="technical-concepts-json-rpc-messages-event-setremovalinfo"></a>
+
+> Location: `clusterevents.cpp`
+
+##### Message Body
+
+Key       | Value
+----------|---------
+jsonrpc   | 2.0
+method    | event::SetRemovalInfo
+params    | Dictionary
+
+##### Params
+
+Key            | Type        | Description
+---------------|-------------|---------------------------------
+object\_type   | String      | Object type (`"Comment"` or `"Downtime"`)
+object\_name   | String      | Object name
+removed\_by    | String      | Name of the removal requestor
+remove\_time   | Timestamp   | Time of the remove operation
+
+##### Functions
+
+**Event Sender**: `Comment::OnRemovalInfoChanged` and `Downtime::OnRemovalInfoChanged`
+**Event Receiver**: `SetRemovalInfoAPIHandler`
+
+This message is used to synchronize information about manual comment and downtime removals before deleting the
+corresponding object.
+
+##### Permissions
+
+This message is only accepted from the local zone and from parent zones.
 
 #### config::Update <a id="technical-concepts-json-rpc-messages-config-update"></a>
 
