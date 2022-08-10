@@ -44,7 +44,7 @@ using namespace icinga;
 
 using Prio = RedisConnection::QueryPriority;
 
-std::unordered_set<Type*> IcingaDB::m_IndexedTypes;
+std::unordered_set<Type::Ptr> IcingaDB::m_IndexedTypes;
 
 INITIALIZE_ONCE(&IcingaDB::ConfigStaticInitialize);
 
