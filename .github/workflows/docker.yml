@@ -1,14 +1,7 @@
 name: Docker image
 
 on:
-  pull_request: {}
-  push:
-    branches:
-      - master
-      - 'support/*'
-  release:
-    types:
-      - published
+  push: {}
 
 jobs:
   docker:
@@ -23,7 +16,7 @@ jobs:
           access_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker image
-        uses: Icinga/docker-icinga2@master
+        uses: Al2Klimov/docker-icinga2@ffc0294
         env:
           INPUT_TOKEN: '${{ github.token }}'
           DOCKER_HUB_PASSWORD: '${{ secrets.DOCKER_HUB_PERSONAL_TOKEN }}'
