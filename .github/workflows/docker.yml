@@ -16,7 +16,7 @@ jobs:
           access_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker image
-        uses: Al2Klimov/docker-icinga2@testffc0294
+        uses: Al2Klimov/docker-icinga2@test3c30865
         env:
           INPUT_TOKEN: '${{ github.token }}'
           DOCKER_HUB_PASSWORD: '${{ secrets.DOCKER_HUB_PERSONAL_TOKEN }}'
