@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - buildx-test
       - 'support/*'
   release:
     types:
