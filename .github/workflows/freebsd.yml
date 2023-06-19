@@ -1,0 +1,39 @@
+name: FreeBSD
+
+on:
+  push: { } # TODO: remove
+  pull_request: { }
+
+concurrency:
+  group: freebsd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  freebsd:
+    name: FreeBSD
+    runs-on: macos-12
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v3
+
+      - name: Build
+        uses: vmactions/freebsd-vm@dcbf6bacfcec5f990d6a6b3aab51beb0171b7354 # v0.3.0
+        with:
+          release: 13.1
+          usesh: true
+
+          prepare: |
+            pkg install -y bison boost-libs cmake mariadb106-client ninja postgresql15-client
+
+          run: |
+            mkdir build
+            cd build
+            cmake \
+              -GNinja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DICINGA2_UNITY_BUILD=OFF \
+              -DICINGA2_USER=$(id -un) \
+              -DICINGA2_GROUP=$(id -gn) \
+              ..
+            ninja
