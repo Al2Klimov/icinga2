@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 2.8.8)
 set(BOOST_MIN_VERSION "1.66.0")
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -386,8 +386,8 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     OUTPUT_VARIABLE _ICINGA2_COMPILER_VERSION
   )
 
-  if("${CMAKE_CXX_COMPILER_VERSION}" VERSION_LESS "6.3.0")
-    message(FATAL_ERROR "Your version of GCC (${CMAKE_CXX_COMPILER_VERSION}) is too old for building Icinga 2 (GCC >= 6.3.0 is required).")
+  if("${CMAKE_CXX_COMPILER_VERSION}" VERSION_LESS "7.0.0")
+    message(FATAL_ERROR "Your version of GCC (${CMAKE_CXX_COMPILER_VERSION}) is too old for building Icinga 2 (GCC >= 7.0.0 is required).")
   endif()
 endif()
 
