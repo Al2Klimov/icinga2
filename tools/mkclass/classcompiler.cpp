@@ -554,7 +554,7 @@ void ClassCompiler::HandleClass(const Klass& klass, const ClassDebugInfo&)
 
 	/* constructor */
 	m_Header << "public:" << std::endl
-			<< "\t" << "ObjectImpl<" << klass.Name << ">();" << std::endl;
+			<< "\t" << "ObjectImpl();" << std::endl;
 
 	m_Impl << "ObjectImpl<" << klass.Name << ">::ObjectImpl()" << std::endl
 		<< "{" << std::endl;
