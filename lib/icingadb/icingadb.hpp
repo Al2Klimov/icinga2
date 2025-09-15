@@ -259,7 +259,7 @@ private:
 	static String m_EnvironmentId;
 	static std::mutex m_EnvironmentIdInitMutex;
 
-	static std::unordered_set<Type*> m_IndexedTypes;
+	static std::unordered_set<Type::Ptr> m_IndexedTypes;
 };
 }
 
