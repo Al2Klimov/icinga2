@@ -32,8 +32,11 @@ if (-not (Test-Path env:CMAKE_GENERATOR_PLATFORM)) {
 if (-not (Test-Path env:CMAKE_ARGS)) {
   $env:CMAKE_ARGS = '[]'
 }
+if (-not (Test-Path env:OPENSSL_VERSION)) {
+  $env:OPENSSL_VERSION = '3_5_6'
+}
 if (-not (Test-Path env:OPENSSL_ROOT_DIR)) {
-  $env:OPENSSL_ROOT_DIR = "c:\local\OpenSSL_3_5_6-Win${env:BITS}"
+  $env:OPENSSL_ROOT_DIR = "c:\local\OpenSSL_${env:OPENSSL_VERSION}-Win${env:BITS}"
 }
 if (-not (Test-Path env:BOOST_ROOT)) {
   $env:BOOST_ROOT = "c:\local\boost_1_90_0-Win${env:BITS}"
