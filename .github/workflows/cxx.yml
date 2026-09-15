@@ -1,0 +1,89 @@
+name: C++
+
+on:
+  push:
+    branches:
+      - master
+  pull_request: {}
+
+jobs:
+
+  test:
+    name: Test
+
+    strategy:
+      matrix:
+        os:
+          - ubuntu-16.04
+          - ubuntu-18.04
+        CMAKE_BUILD_TYPE:
+          - RelWithDebInfo
+          - Debug
+        ICINGA2_UNITY_BUILD:
+          - On
+          - Off
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - name: Deps packages
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive \
+            sudo apt-get install --no-install-{recommends,suggests} -y \
+            bison ccache flex libmysqlclient-dev libpq-dev
+      - name: update-ccache-symlinks
+        run: update-ccache-symlinks
+
+      - name: Restore/backup ccache
+        id: ccache
+        uses: actions/cache@v1
+        with:
+          path: /tmp/ccache
+          key: ${{ matrix.os }}-ccache-${{ matrix.CMAKE_BUILD_TYPE }}
+
+      - name: cmake
+        run: |
+          set -exo pipefail
+          mkdir build
+          cd build
+          PATH="/usr/lib/ccache:$PATH" \
+            CCACHE_DIR=/tmp/ccache \
+            cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ matrix.CMAKE_BUILD_TYPE }} \
+            -DICINGA2_UNITY_BUILD=${{ matrix.ICINGA2_UNITY_BUILD }} \
+            -DCMAKE_INSTALL_PREFIX=/tmp/icinga2 \
+            -DICINGA2_PLUGINDIR=/tmp/icinga2/sbin \
+            -DBoost_NO_BOOST_CMAKE=TRUE \
+            -DBoost_NO_SYSTEM_PATHS=TRUE \
+            -DICINGA2_USER=$(id -u -n) \
+            -DICINGA2_GROUP=$(id -g -n)
+
+      - name: make
+        run: |
+          set -exo pipefail
+          mkdir -p /tmp/ccache
+          cd build
+          make -j2
+      - name: make test
+        run: |
+          set -exo pipefail
+          cd build
+          make test
+      - name: make install
+        run: |
+          set -exo pipefail
+          cd build
+          make install
+
+      - name: icinga2 --version
+        run: |
+          set -exo pipefail
+          /tmp/icinga2/sbin/icinga2 --version
+      - name: icinga2 daemon -C
+        run: |
+          set -exo pipefail
+          /tmp/icinga2/sbin/icinga2 daemon -C
